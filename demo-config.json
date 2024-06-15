@@ -1,0 +1,11 @@
+{
+    "acceptance_rate_vector": "7b-70b-acc.pt",
+    "mode": "batch",
+    "max_depth": 10,
+    "max_budget": 64,
+    "valid_budget": [2,4,8,16,32,64],
+    "target_time":[33.9,35.8,36.4,37.2,40.7,51.0],
+    "valid_branch": [1,2,3,4,5,6,7,8],
+    "draft_time": [9.1,9.8,10.0,10.3,10.4,10.5,10.6,10.7],
+    "dst": "demo_tree.pt"
+}
