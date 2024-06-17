@@ -1,11 +1,7 @@
-import itertools
-import sys
-import time
-from pathlib import Path
-from typing import Optional, Tuple
-
 import torch
 from FastHesse.New_Engine.model import Transformer
+import numpy as np
+import random
 
 def device_sync(device):
     if "cuda" in device:
@@ -43,3 +39,10 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, cache_
     # input_pos: [B, S]
     logits = model(x, input_pos, cache_pos, attention_mask)
     return logits
+
+def setup_seed(seed):
+     torch.manual_seed(seed)
+     torch.cuda.manual_seed_all(seed)
+     np.random.seed(seed)
+     random.seed(seed)
+     torch.backends.cudnn.deterministic = True

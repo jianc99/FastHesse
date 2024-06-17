@@ -49,10 +49,10 @@ for m in tqdm(range(2, max_budget+1)):
                 new_list.append((m-new_y, l-1, new_branch))
                 branch_map[(m,l,b)] = new_list
 
-
+# print(T)
 results = T.max(dim=2).values
 print(results)
-
+# print(branch_map)
 import time
 time.sleep(1000)
 
@@ -91,7 +91,6 @@ expand_lists = []
 expand_branches = []
 num_nodes = 1
 while True:
-
     expand = []
     expand_branch = []
     for i, act in enumerate(active):

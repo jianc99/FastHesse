@@ -9,7 +9,8 @@ conda activate hesse
 ### Install Necessary Packages
 
 ``` bash
-pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121
+# pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121
+pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu121
 pip install transformers==4.36.2
 pip install protobuf
 pip install sentencepiece
