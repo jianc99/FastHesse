@@ -23,7 +23,7 @@ pip install tiktoken
 ## Run Scripts
 ### Prepare Checkpoints
 ```bash
-export MODEL_REPO=meta-llama/Llama-2-7b-chat-hf
+export MODEL_REPO=meta-llama/Llama-2-7b-hf
 ./scripts/prepare.sh $MODEL_REPO
 ```
 
