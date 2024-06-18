@@ -38,29 +38,28 @@ class BatchSTree(BatchTree):
         self.Successors = self.grow_map["Successors"]
 
         tree_mask :torch.Tensor = self.grow_map["mask"].to(self.device)
-        tree_mask = (tree_mask == 0).type(self.dtype)
-        tree_mask.masked_fill_(tree_mask > 0, torch.finfo(self.dtype).min)
+        tree_mask = (tree_mask == 1).type(torch.bool)
         self.initialize(None)
         self.set_prefix(prefix=prefix)
 
         self.tree_size = self.grow_map["size"]
         self.tree_mask = tree_mask
 
-        self.attn_mask = torch.full((self.batch_size, 1, self.tree_size ,self.max_length), torch.tensor(torch.finfo(self.dtype).min, device=device), device=device).to(self.dtype)
+        self.attn_mask = torch.full((self.batch_size, 1, self.tree_size ,self.max_length), 0, dtype=torch.bool, device=device)
 
         self.depth = self.grow_map["depth"].repeat(self.batch_size,1).to(self.device)
 
         self.tree_buffer = torch.zeros((self.batch_size, self.tree_size),device=self.device).long()
-        self.draft_logits = torch.zeros((self.batch_size, self.tree_size, vocab_size), dtype=torch.float32).to(self.device)
+        self.draft_logits = torch.zeros((self.batch_size, self.tree_size, vocab_size), dtype=torch.bfloat16).to(self.device)
 
         self.make_inference_para_for_first_itr(prefix.size(1))
 
-        self.draft_model_engine.forward(input_ids=self.tokens[:, :prefix.size(1)], 
+        self.draft_model_engine.encode(input_ids=self.tokens[:, :prefix.size(1)], 
                             storage_ids=self.prefill_storage_ids, 
                             position_ids=self.prefill_position_ids,
                             attention_mask=self.prefill_mask)
         
-        output = self.target_model_engine.forward(input_ids=self.tokens[:, :prefix.size(1)], 
+        output = self.target_model_engine.encode(input_ids=self.tokens[:, :prefix.size(1)], 
                             storage_ids=self.prefill_storage_ids, 
                             position_ids=self.prefill_position_ids,
                             attention_mask=self.prefill_mask)
@@ -96,7 +95,7 @@ class BatchSTree(BatchTree):
                     t2 = time.time()
                     x1 += (t2 - t1)
         
-        draft_model_outputs = self.draft_model_engine.forward(
+        draft_model_outputs = self.draft_model_engine.inference(
             input_ids = self.tree_buffer[:, indices],
             position_ids = self.position_ids[:, indices],
             attention_mask = self.attn_mask[:,:,indices,:],
@@ -134,7 +133,7 @@ class BatchSTree(BatchTree):
         if benchmark:
             torch.cuda.synchronize()
             t1 = time.time()
-        target_model_outputs = self.target_model_engine.forward(input_ids = self.tree_buffer, 
+        target_model_outputs = self.target_model_engine.inference(input_ids = self.tree_buffer, 
                                     position_ids =self.position_ids, attention_mask = self.attn_mask,
                                     storage_ids=self.storage_ids)
         if benchmark:
@@ -183,8 +182,8 @@ class BatchSTree(BatchTree):
                 accept_list = batch_accept_list[batch_idx]
                 accept_list_kv = batch_accept_list_kv[batch_idx]
                 accept_length = len(accept_list)
-                self.draft_model_engine.llm.kv_cache.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
-                self.target_model_engine.llm.kv_cache.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
+                self.draft_model_engine.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
+                self.target_model_engine.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
 
         if not terminal:
             if benchmark:
@@ -227,7 +226,7 @@ class BatchSTree(BatchTree):
         if self.num_nodes.max()+ 1 > self.max_target_seq:
               return 
         self.make_inference_para_for_next_itr()
-        draft_model_outputs = self.draft_model_engine.forward(input_ids = self.tree_buffer[:,:1], 
+        draft_model_outputs = self.draft_model_engine.inference(input_ids = self.tree_buffer[:,:1], 
                                                     storage_ids=self.storage_ids[:1],
                                                     position_ids=self.position_ids[:, :1],
                                                     attention_mask=self.attn_mask[:,:,:1,:])
@@ -243,14 +242,14 @@ class BatchSTree(BatchTree):
         # Draft Construct Tree and Target Verify
          self.attn_mask[:, :, :, -self.tree_size:] = self.tree_mask
          for idx in range(self.batch_size):
-            self.attn_mask[idx, :, :, :prefix_len] = 0.0
+            self.attn_mask[idx, :, :, :prefix_len] = True
          self.position_ids = (self.grow_map["depth"].to(self.device) + prefix_len).repeat(self.batch_size, 1)
          self.storage_ids = torch.arange(self.max_length-self.tree_size, self.max_length).to(self.device)
     
     def make_inference_para_for_next_itr(self):
          self.position_ids = self.depth + self.num_nodes.view(-1,1)
          for idx in range(self.batch_size):
-            self.attn_mask[idx, :, :, :self.num_nodes[idx]] = 0.0
+            self.attn_mask[idx, :, :, :self.num_nodes[idx]] = True
 
 
 class BatchSTreeTest(BatchTree):

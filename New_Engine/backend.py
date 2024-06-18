@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
-from FastHesse.New_Engine.model import ModelArgs, Transformer
+from FastHesse.New_Engine.model import Transformer
 from torch.nn.functional import scaled_dot_product_attention
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from FastHesse.New_Engine.utlis import load_model, model_forward, prefill, model_forward_branch
@@ -173,7 +173,7 @@ class LMBackend:
         for key in self.model_forward.keys():
             self.model_forward[key] = torch.compile(self.model_forward[key], mode="reduce-overhead", fullgraph=True)
         if encode:
-             self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)      
+             self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True, dynamic=True)      
              
     @torch.inference_mode()
     @sdpa_kernel([SDPBackend.MATH])
@@ -211,23 +211,23 @@ class LMBackend:
     @torch.inference_mode()
     def gather_kv_incremental(self, indices: list[int], offset:int, batch_idx=None):
         if batch_idx == None:
-            for b in self.model.layers:
-                b.attention.kv_cache.k_cache[..., offset:offset + len(indices), :] = b.attention.kv_cache.k_cache[..., indices, :]
-                b.attention.kv_cache.v_cache[..., offset:offset + len(indices), :] = b.attention.kv_cache.v_cache[..., indices, :]
-                b.attention.kv_cache.k_cache[..., offset + len(indices):, :] = 0.0
-                b.attention.kv_cache.v_cache[..., offset + len(indices):, :] = 0.0
+            self.model.kv_cache.k_cache[..., offset:offset + len(indices), :] = self.model.kv_cache.k_cache[..., indices, :]
+            self.model.kv_cache.v_cache[..., offset:offset + len(indices), :] = self.model.kv_cache.v_cache[..., indices, :]
+            self.model.kv_cache.k_cache[..., offset + len(indices):, :] = 0.0
+            self.model.kv_cache.v_cache[..., offset + len(indices):, :] = 0.0
         else:
-             for b in self.model.layers:
-                b.attention.kv_cache.k_cache[batch_idx, :, offset:offset + len(indices), :] = b.attention.kv_cache.k_cache[batch_idx, :, indices, :]
-                b.attention.kv_cache.v_cache[batch_idx, :, offset:offset + len(indices), :] = b.attention.kv_cache.v_cache[batch_idx, :, indices, :]
-                b.attention.kv_cache.k_cache[batch_idx, :, offset + len(indices):, :] = 0.0
-                b.attention.kv_cache.v_cache[batch_idx, :, offset + len(indices):, :] = 0.0
+            self.model.kv_cache.k_cache[:, batch_idx, :, offset:offset + len(indices), :] = self.model.kv_cache.k_cache[:, batch_idx, :, indices, :]
+            self.model.kv_cache.v_cache[:, batch_idx, :, offset:offset + len(indices), :] = self.model.kv_cache.v_cache[:, batch_idx, :, indices, :]
+            self.model.kv_cache.k_cache[:, batch_idx, :, offset + len(indices):, :] = 0.0
+            self.model.kv_cache.v_cache[:, batch_idx, :, offset + len(indices):, :] = 0.0
     
     @torch.inference_mode()
     def clear_kv(self):
-         for b in self.model.layers:
-            b.attention.kv_cache.k_cache.zero_()
-            b.attention.kv_cache.v_cache.zero_()
+         self.model.kv_cache.k_cache.zero_()
+         self.model.kv_cache.v_cache.zero_()
+        #  for b in self.model.layers:
+        #     b.attention.kv_cache.k_cache.zero_()
+        #     b.attention.kv_cache.v_cache.zero_()
 
     
 

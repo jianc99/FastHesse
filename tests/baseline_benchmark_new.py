@@ -4,9 +4,8 @@ import sys
 sys.path.append("..")
 from pathlib import Path
 import torch.distributed as dist
-from FastHesse.Engine.utils import initialized_dist_baseline, make_causal_mask, setup_seed
+from FastHesse.New_Engine.utlis import setup_seed
 from FastHesse.Data.data_converter import convert_wiki_dataset, convert_cnn_dataset, convert_c4_dataset
-from FastHesse.Engine.llm_pipe import LLMEngine
 from transformers import LlamaTokenizer, DataCollatorForLanguageModeling
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm

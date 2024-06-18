@@ -7,7 +7,7 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 import argparse
-from FastHesse.New_Engine.backend import LMBackendTest
+from FastHesse.New_Engine.backend import LMBackend
 
 parser = argparse.ArgumentParser(description='Your CLI description.')
 parser.add_argument('--checkpoint_path', type=Path, default=Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"), help='Model checkpoint path.')
@@ -42,7 +42,7 @@ T = 500
 
 causal_mask = torch.tril(torch.ones(max_seq_length, max_seq_length, dtype=torch.bool, device=device))
 
-llm = LMBackendTest(dtype=precision, device=device, dec_list=dec_list)
+llm = LMBackend(dtype=precision, device=device, dec_list=dec_list)
 llm.load_model(checkpoint_path, use_tp=use_tp, rank_group=args.rank_group)
 if args.compile:
     llm.compile()
