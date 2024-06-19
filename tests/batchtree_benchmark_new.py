@@ -84,10 +84,6 @@ def simulation_fast(target_model : LMBackend, draft_model: LMBackend, dataloader
             print("total time :{:.5f}s, latency :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / num_decoding_steps, num_decoding_steps, num_large_model_steps))
             draft_model.clear_kv()
             target_model.clear_kv()
-            if step < 10:
-                num_decoding_steps = 0
-                num_large_model_steps = 0
-                total_time = 0.0
     return num_decoding_steps / num_large_model_steps
 
 def simulation_benchmark(target_model : LMBackend, draft_model: LMBackend, dataloader: DataLoader, T=0.6, top_p=0.9, 
@@ -147,17 +143,6 @@ def simulation_benchmark(target_model : LMBackend, draft_model: LMBackend, datal
                 print("initialization time:{}".format(initialize_time / num_large_model_steps), "speculate time: {}".format(speculate_time / num_large_model_steps),  "verify time: {}".format(verify_time / num_large_model_steps))
                 print("large model run: {}".format(large_model_run / num_large_model_steps) , "accept loop: {}".format(accept_loop / num_large_model_steps), "kv select: {}".format(kv_select / num_large_model_steps))
                 print("small model run: {}".format(small_model_compute / num_large_model_steps) , "sample time: {}".format(sample_time / num_large_model_steps))
-            if step < 10:
-                num_decoding_steps = 0
-                num_large_model_steps = 0
-                initialize_time = 0.0
-                speculate_time = 0.0
-                verify_time = 0.0
-                large_model_run = 0.0
-                accept_loop = 0.0
-                kv_select = 0.0
-                sample_time = 0.0
-                small_model_compute = 0.0
     return num_decoding_steps / num_large_model_steps
 
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=False)
@@ -192,7 +177,7 @@ for i in range(draft_step - 1):
     num_samples = max(branch_lists[i])
     sampling_callables[i] = cuda_graph_for_sampling_argmax(device=DEVICE,
         max_length=args.M, idx_len=idx_len, num_samples=num_samples,
-        temperature=args.T, tree_size=tree_size)  
+        temperature=args.T, tree_size=tree_size, dtype=DTYPE)  
 for i in range(draft_step - 1):
     ith_gather_list = []
     max_num_samples = max(branch_lists[i])
@@ -211,14 +196,14 @@ draft_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=dec_list_draft)
 draft_model.load_model(DRAFT_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.draft_group)
 if args.compile:
     draft_model.compile()
-draft_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
-
+draft_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, max_depth=draft_step)
+draft_model.warmup(n=200)
 target_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=dec_list_target)
 target_model.load_model(TARGET_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.target_group)
 if args.compile:
     target_model.compile()
-target_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
-
+target_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, max_depth=draft_step)
+target_model.warmup(n=200)
 if args.Mode == "fast":
     simulation_fast(target_model=target_model, draft_model=draft_model, dataloader=dataloader, T=args.T, top_p=args.P,
                                      max_length=MAX_LEN, grow_map = grow_map, sampling_callables=sampling_callables, sample_gather_indices = sample_gather_indices)

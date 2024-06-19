@@ -193,7 +193,7 @@ def cuda_graph_for_sampling_without_replacement(
     return run
 
 def cuda_graph_for_sampling_argmax(
-                device="cuda:0", dtype=torch.float16, 
+                device="cuda:0", dtype=torch.bfloat16, 
                 dim=32000, max_length=384, 
                 n_warmups=3, mempool=None,
                 idx_len = 8, num_samples = 16,

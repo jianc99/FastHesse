@@ -178,12 +178,16 @@ class BatchSTree(BatchTree):
                 self.tree_buffer[batch_idx, 0]= bonus_token
 # Gather KV Cache
         if not terminal:
-            for batch_idx in range(self.batch_size):
-                accept_list = batch_accept_list[batch_idx]
-                accept_list_kv = batch_accept_list_kv[batch_idx]
-                accept_length = len(accept_list)
-                self.draft_model_engine.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
-                self.target_model_engine.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
+            indices = torch.full((self.batch_size, self.draft_step),255,device=self.device).long()
+            offsets = self.num_nodes.clone()
+            for i in range(self.batch_size):
+                accept_list_kv=batch_accept_list_kv[i]
+                for j in range(len(accept_list_kv)):
+                    indices[i,j] = accept_list_kv[j]
+                accept_length = len(accept_list_kv)
+                offsets[i]-=accept_length
+            self.draft_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
+            self.target_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
 
         if not terminal:
             if benchmark:
@@ -428,12 +432,16 @@ class BatchSTreeTest(BatchTree):
                 self.tree_buffer[batch_idx, 0]= bonus_token
 # Gather KV Cache
         if not terminal:
-            for batch_idx in range(self.batch_size):
-                accept_list = batch_accept_list[batch_idx]
-                accept_list_kv = batch_accept_list_kv[batch_idx]
-                accept_length = len(accept_list)
-                self.draft_model_engine.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
-                self.target_model_engine.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
+            indices = torch.full((self.batch_size, self.draft_step),255,device=self.device).long()
+            offsets = self.num_nodes.clone()
+            for i in range(self.batch_size):
+                accept_list_kv=batch_accept_list_kv[i]
+                for j in range(len(accept_list_kv)):
+                    indices[i,j] = accept_list_kv[j]
+                accept_length = len(accept_list_kv)
+                offsets[i]-=accept_length
+            self.draft_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
+            self.target_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
 
         if not terminal:
             if benchmark:

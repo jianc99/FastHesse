@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from model import Transformer
+from FastHesse.New_Engine.model import Transformer
 import argparse
 def device_sync(device):
     if "cuda" in device:
