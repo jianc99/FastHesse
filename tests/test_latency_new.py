@@ -62,7 +62,7 @@ llm.encode(input_ids=prompt, position_ids=prefill_pos, storage_ids=prefill_stora
 # print(k)
 # print(indices)
 # time.sleep(1000)
-for _ in range(2):
+for _ in range(3):
     for declen in dec_list:
         dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
         dec_pos = torch.arange(prefix_len, prefix_len + declen, device=device).unsqueeze(0).repeat(max_batch_size,1)
