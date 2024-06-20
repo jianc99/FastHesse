@@ -34,7 +34,7 @@ class LMBackend:
         if encode:
              self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)      
              
-    # @torch.inference_mode()
+    @torch.inference_mode()
     @sdpa_kernel([SDPBackend.MATH])
     def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
             dec_len = input_ids.shape[1]
