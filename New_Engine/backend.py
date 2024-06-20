@@ -34,17 +34,17 @@ class LMBackend:
         if encode:
              self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)      
              
-    @torch.inference_mode()
+    # @torch.inference_mode()
     @sdpa_kernel([SDPBackend.MATH])
     def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
             dec_len = input_ids.shape[1]
             if dec_len in self.model_forward.keys():
                 return self.model_forward[dec_len](
                     model=self.model, 
-                    x=input_ids.clone(),
-                    input_pos=position_ids.clone(),
-                    cache_pos=storage_ids.clone(),
-                    attention_mask=attention_mask.clone())
+                    x=input_ids,
+                    input_pos=position_ids,
+                    cache_pos=storage_ids,
+                    attention_mask=attention_mask)
             else:
                  return model_forward(
                     model=self.model, 
