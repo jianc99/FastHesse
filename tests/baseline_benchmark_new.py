@@ -50,7 +50,7 @@ engine.load_model(checkpoint_path, use_tp=use_tp, rank_group = args.rank_group)
 if args.compile:
     engine.compile()
 engine.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
-engine.warmup(n=200)
+engine.warmup(n=20)
 
 tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 tokenizer.pad_token = tokenizer.eos_token
@@ -101,9 +101,6 @@ for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
     t2=time.perf_counter()
     total_time += t2-t1
     print(total_time/model_steps)
-    if step==0: # First itr warm up
-        total_time = 0.0
-        model_steps = 0
     for i in range(BATCH_SIZE):
         print(tokenizer.decode(output[i]))
     if use_tp:

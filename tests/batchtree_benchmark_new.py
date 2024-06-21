@@ -90,18 +90,18 @@ def simulation_benchmark(target_model : LMBackend, draft_model: LMBackend, datal
             max_length=512, grow_map=None, sampling_callables = None,
             sample_gather_indices = None):
     num_eval_steps = len(dataloader)
-    num_decoding_steps = 0
-    num_large_model_steps = 0
-    initialize_time = 0.0
-    speculate_time = 0.0
-    verify_time = 0.0
-    large_model_run = 0.0
-    accept_loop = 0.0
-    kv_select = 0.0
-    sample_time = 0.0
-    small_model_compute = 0.0
     with torch.no_grad():
         for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
+            num_decoding_steps = 0
+            num_large_model_steps = 0
+            initialize_time = 0.0
+            speculate_time = 0.0
+            verify_time = 0.0
+            large_model_run = 0.0
+            accept_loop = 0.0
+            kv_select = 0.0
+            sample_time = 0.0
+            small_model_compute = 0.0
             input_ids = batch['input_ids'][..., :128]
             labels = batch['labels'][..., :128]
             terminate = False
@@ -197,13 +197,13 @@ draft_model.load_model(DRAFT_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.
 if args.compile:
     draft_model.compile()
 draft_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, max_depth=draft_step)
-draft_model.warmup(n=200)
+# draft_model.warmup(n=20)
 target_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=dec_list_target)
 target_model.load_model(TARGET_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.target_group)
 if args.compile:
     target_model.compile()
 target_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, max_depth=draft_step)
-target_model.warmup(n=200)
+# target_model.warmup(n=20)
 if args.Mode == "fast":
     simulation_fast(target_model=target_model, draft_model=draft_model, dataloader=dataloader, T=args.T, top_p=args.P,
                                      max_length=MAX_LEN, grow_map = grow_map, sampling_callables=sampling_callables, sample_gather_indices = sample_gather_indices)
