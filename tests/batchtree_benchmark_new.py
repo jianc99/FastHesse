@@ -134,15 +134,15 @@ def simulation_benchmark(target_model : LMBackend, draft_model: LMBackend, datal
                 verify_time += (t4 - t3)
                 num_large_model_steps += 1
             num_decoding_steps += (num_nodes.sum() - input_ids.shape[1]*BATCH_SIZE)
-            draft_model.clear_kv()
-            target_model.clear_kv()
+            # draft_model.clear_kv()
+            # target_model.clear_kv()
             if num_large_model_steps > 0 and global_rank==0:
                 print(num_decoding_steps / num_large_model_steps)
-            if global_rank == 0:
-                print("total decoding steps: {}".format(num_decoding_steps), "large model steps: {}".format(num_large_model_steps), "avg decoding step: {}".format(num_decoding_steps / num_large_model_steps))
-                print("initialization time:{}".format(initialize_time / num_large_model_steps), "speculate time: {}".format(speculate_time / num_large_model_steps),  "verify time: {}".format(verify_time / num_large_model_steps))
-                print("large model run: {}".format(large_model_run / num_large_model_steps) , "accept loop: {}".format(accept_loop / num_large_model_steps), "kv select: {}".format(kv_select / num_large_model_steps))
-                print("small model run: {}".format(small_model_compute / num_large_model_steps) , "sample time: {}".format(sample_time / num_large_model_steps))
+            # if global_rank == 0:
+            print("total decoding steps: {}".format(num_decoding_steps), "large model steps: {}".format(num_large_model_steps), "avg decoding step: {}".format(num_decoding_steps / num_large_model_steps))
+            print("initialization time:{}".format(initialize_time / num_large_model_steps), "speculate time: {}".format(speculate_time / num_large_model_steps),  "verify time: {}".format(verify_time / num_large_model_steps))
+            print("large model run: {}".format(large_model_run / num_large_model_steps) , "accept loop: {}".format(accept_loop / num_large_model_steps), "kv select: {}".format(kv_select / num_large_model_steps))
+            print("small model run: {}".format(small_model_compute / num_large_model_steps) , "sample time: {}".format(sample_time / num_large_model_steps))
     return num_decoding_steps / num_large_model_steps
 
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=False)
