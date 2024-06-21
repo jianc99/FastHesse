@@ -41,26 +41,26 @@ class LMBackend:
             if dec_len in self.model_forward.keys():
                 return self.model_forward[dec_len](
                     model=self.model, 
-                    x=input_ids,
-                    input_pos=position_ids,
-                    cache_pos=storage_ids,
-                    attention_mask=attention_mask)
+                    x=input_ids.clone(),
+                    input_pos=position_ids.clone(),
+                    cache_pos=storage_ids.clone(),
+                    attention_mask=attention_mask.clone()).clone()
             else:
                  return model_forward(
                     model=self.model, 
-                    x=input_ids,
-                    input_pos=position_ids,
-                    cache_pos=storage_ids,
-                    attention_mask=attention_mask)
+                    x=input_ids.clone(),
+                    input_pos=position_ids.clone(),
+                    cache_pos=storage_ids.clone(),
+                    attention_mask=attention_mask.clone()).clone()
     
     @torch.inference_mode()
     def encode(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
             return self.prefill(
                  model=self.model, 
-                 x=input_ids,
-                 input_pos=position_ids,
-                 cache_pos=storage_ids,
-                 attention_mask=attention_mask)            
+                 x=input_ids.clone(),
+                 input_pos=position_ids.clone(),
+                 cache_pos=storage_ids.clone(),
+                 attention_mask=attention_mask.clone()).clone()            
     
     @torch.inference_mode()
     def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, max_depth=1):
