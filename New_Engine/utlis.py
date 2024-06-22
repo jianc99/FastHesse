@@ -11,7 +11,7 @@ def device_sync(device):
     else:
         print(f"device={device} is not yet suppported")
 
-def load_model(checkpoint_path, device, precision, use_tp, rank_group=None):
+def load_model(checkpoint_path, device, precision, use_tp, rank_group=None, global_group = None):
 
     with torch.device('meta'):
         model = Transformer.from_name(checkpoint_path.parent.name)
@@ -24,7 +24,7 @@ def load_model(checkpoint_path, device, precision, use_tp, rank_group=None):
     if use_tp:
         from FastHesse.New_Engine.tp import apply_tp
         print("Applying tensor parallel to model ...")
-        apply_tp(model, rank_group)
+        apply_tp(model, rank_group, global_group)
 
     model = model.to(device=device, dtype=precision)
     return model.eval()

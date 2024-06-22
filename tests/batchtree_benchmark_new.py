@@ -39,7 +39,7 @@ global print
 from FastHesse.New_Engine.tp import init_dist
 use_tp = True
 if use_tp:
-    global_rank = init_dist()
+    global_rank, global_group = init_dist()
 if use_tp:
     if global_rank != 0:
         # only print on rank 0
@@ -194,13 +194,13 @@ dec_list_draft = [sum(x) for x in branch_lists]
 dec_list_draft.append(1)
 
 draft_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=dec_list_draft)
-draft_model.load_model(DRAFT_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.draft_group)
+draft_model.load_model(DRAFT_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.draft_group, global_group= global_group)
 if args.compile:
     draft_model.compile()
 draft_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, max_depth=draft_step)
 # draft_model.warmup(n=20)
 target_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=dec_list_target)
-target_model.load_model(TARGET_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.target_group)
+target_model.load_model(TARGET_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.target_group, global_group = global_group)
 if args.compile:
     target_model.compile()
 target_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN, max_depth=draft_step)
