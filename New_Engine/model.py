@@ -206,6 +206,7 @@ class Attention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
+        funcol.all_reduce(y, "sum", [0,1,2,3])
         return y
 
 
@@ -217,7 +218,9 @@ class FeedForward(nn.Module):
         self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=False)
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        out = self.w2(F.silu(self.w1(x)) * self.w3(x))
+        funcol.all_reduce(out, "sum", [0,1,2,3])
+        return out
 
 
 class RMSNorm(nn.Module):

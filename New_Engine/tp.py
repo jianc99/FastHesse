@@ -156,8 +156,8 @@ def _apply_tp_ffn(mlp: FeedForward, rank_group, global_group) -> None:
 
     # mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
     #     output, "sum", global_group))
-    mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum"))
+    # mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
+    #     output, "sum"))
 
 
 def _apply_tp_attn(attn: Attention, rank_group, config, global_group) -> None:
@@ -176,8 +176,8 @@ def _apply_tp_attn(attn: Attention, rank_group, config, global_group) -> None:
 
     # attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
     #     output, "sum", global_group))
-    attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum"))
+    # attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
+    #     output, "sum"))
 
 
 def _apply_tp_Transformer(Transformer: Transformer, rank_group) -> None:
