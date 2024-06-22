@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
+from torch.distributed import _functional_collectives as funcol
 
 
 def find_multiple(n: int, k: int) -> int:

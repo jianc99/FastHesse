@@ -154,8 +154,10 @@ def _apply_tp_ffn(mlp: FeedForward, rank_group, global_group) -> None:
     _apply_tp_linear_mlp(mlp.w3, "colwise", rank_group=rank_group)
     _apply_tp_linear_mlp(mlp.w2, "rowwise", rank_group=rank_group)
 
+    # mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
+    #     output, "sum", global_group))
     mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", global_group))
+        output, "sum"))
 
 
 def _apply_tp_attn(attn: Attention, rank_group, config, global_group) -> None:
@@ -172,8 +174,10 @@ def _apply_tp_attn(attn: Attention, rank_group, config, global_group) -> None:
     attn.head_dim = attn.dim // attn.n_head
     attn.n_local_heads = config.n_local_heads
 
+    # attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
+    #     output, "sum", global_group))
     attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", global_group))
+        output, "sum"))
 
 
 def _apply_tp_Transformer(Transformer: Transformer, rank_group) -> None:
