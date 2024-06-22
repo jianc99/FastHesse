@@ -21,8 +21,8 @@ class LMBackend:
         self.prefill = lambda model, x, input_pos, cache_pos, attention_mask : model(x, input_pos, cache_pos, attention_mask)
         self.gather_kv = None
 
-    def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, global_group = None):
-        self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group, global_group = global_group)   
+    def load_model(self, checkpoints: str, use_tp: bool, rank_group=None):
+        self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group)   
 
     def compile(self, encode=False):
         import torch._dynamo.config

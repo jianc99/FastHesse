@@ -145,7 +145,7 @@ def _apply_tp_linear_mlp(linear: nn.Linear, style: str, weight_splits: List[int]
     # assert linear.weight.shape == (linear.out_features, linear.in_features)
 
 
-def _apply_tp_ffn(mlp: FeedForward, rank_group, global_group) -> None:
+def _apply_tp_ffn(mlp: FeedForward, rank_group) -> None:
     assert hasattr(mlp, "w1")
     assert hasattr(mlp, "w3")
     assert hasattr(mlp, "w2")
@@ -155,10 +155,10 @@ def _apply_tp_ffn(mlp: FeedForward, rank_group, global_group) -> None:
     _apply_tp_linear_mlp(mlp.w2, "rowwise", rank_group=rank_group)
 
     mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", global_group))
+        output, "sum", rank_group))
 
 
-def _apply_tp_attn(attn: Attention, rank_group, config, global_group) -> None:
+def _apply_tp_attn(attn: Attention, rank_group, config) -> None:
     assert hasattr(attn, "wqkv")
     assert hasattr(attn, "wo")
 
@@ -173,7 +173,7 @@ def _apply_tp_attn(attn: Attention, rank_group, config, global_group) -> None:
     attn.n_local_heads = config.n_local_heads
 
     attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", global_group))
+        output, "sum", rank_group))
 
 
 def _apply_tp_Transformer(Transformer: Transformer, rank_group) -> None:
@@ -190,9 +190,9 @@ def _apply_tp_Transformer(Transformer: Transformer, rank_group) -> None:
     Transformer.config.n_local_heads = local_num_kv_heads
 
 
-def apply_tp(model: Transformer, rank_group, global_group) -> None:
+def apply_tp(model: Transformer, rank_group) -> None:
     _apply_tp_Transformer(model, rank_group)
     for block in model.layers:
         # Apply to MLP
-        _apply_tp_ffn(block.feed_forward, rank_group, global_group)
-        _apply_tp_attn(block.attention, rank_group, model.config, global_group)
+        _apply_tp_ffn(block.feed_forward, rank_group)
+        _apply_tp_attn(block.attention, rank_group, model.config)
