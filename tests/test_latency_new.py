@@ -38,7 +38,7 @@ prefix_len = args.prefixlen
 dec_list = args.declen_list
 
 warm_up = 10
-T = 500
+T = 1000
 
 causal_mask = torch.tril(torch.ones(max_seq_length, max_seq_length, dtype=torch.bool, device=device))
 

@@ -56,8 +56,7 @@ def init_dist() -> Optional[int]:
     world_size = _get_world_size()
     torch.cuda.set_device(rank)
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
-    global_group = dist.new_group(list(range(world_size)))
-    return rank, global_group
+    return rank
 
 
 def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [], rank_group=None, num_kv_heads = None, num_heads = None, head_dim = None) -> None:
