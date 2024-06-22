@@ -105,14 +105,14 @@ def simulation_benchmark(target_model : LMBackend, draft_model: LMBackend, datal
             input_ids = batch['input_ids'][..., :128]
             labels = batch['labels'][..., :128]
             terminate = False
-            if (labels[:, -1] == -100)._is_any_true(): terminate = True
-            dist.barrier()
+            if (labels[:, -1] == -100)._is_any_true(): terminate = True 
+            print("Before encode")           
             spectree = BatchSTree (prefix=input_ids, device=DEVICE, temperature=T, top_p=top_p,
                                     draft_model_engine=draft_model, target_model_engine=target_model, max_length=max_length, grow_map=grow_map,
                                    sampling_callables=sampling_callables, sample_gather_indices = sample_gather_indices, batch_size=BATCH_SIZE, max_target_seq=256
                                     )
+            print("After encode")
             longest=128
-            dist.barrier()
             while longest < 256 and terminate == False:
                 torch.cuda.synchronize()
                 t1 = time.time()
