@@ -6,6 +6,7 @@ from FastHesse.New_Engine.model import Transformer
 from torch.nn.functional import scaled_dot_product_attention
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from FastHesse.New_Engine.utlis import load_model, model_forward, cuda_graph_for_gather_kv
+import torch.distributed as dist
 
 class LMBackend:
     def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_list: list = [1]) -> None:
@@ -37,6 +38,7 @@ class LMBackend:
     @torch.inference_mode()
     @sdpa_kernel([SDPBackend.MATH])
     def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
+            dist.barrier()
             dec_len = input_ids.shape[1]
             if dec_len in self.model_forward.keys():
                 return self.model_forward[dec_len](
@@ -55,6 +57,7 @@ class LMBackend:
     
     @torch.inference_mode()
     def encode(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
+            dist.barrier()
             return self.prefill(
                  model=self.model, 
                  x=input_ids.clone(),
