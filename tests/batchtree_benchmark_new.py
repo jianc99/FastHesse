@@ -51,12 +51,16 @@ def simulation_fast(target_model : LMBackend, draft_model: LMBackend, dataloader
             max_length=512, grow_map=None, sampling_callables = None,
             sample_gather_indices = None):
     num_eval_steps = len(dataloader)
-    num_decoding_steps = 0
-    num_large_model_steps = 0
-    total_time = 0.0
+    # num_decoding_steps = 0
+    # num_large_model_steps = 0
+    # total_time = 0.0
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=False)
     with torch.no_grad():
         for step, batch in tqdm(enumerate(dataloader), total=num_eval_steps):
+            num_decoding_steps = 0
+            num_large_model_steps = 0
+            total_time = 0.0
+
             input_ids = batch['input_ids'][..., :128]
             labels = batch['labels'][..., :128]
             terminate = False
@@ -82,8 +86,8 @@ def simulation_fast(target_model : LMBackend, draft_model: LMBackend, dataloader
             for i in range(BATCH_SIZE):
                 print(tokenizer.decode(spectree.tokens[i,:num_nodes[i]]))
             print("total time :{:.5f}s, latency :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / num_decoding_steps, num_decoding_steps, num_large_model_steps))
-            draft_model.clear_kv()
-            target_model.clear_kv()
+            # draft_model.clear_kv()
+            # target_model.clear_kv()
     return num_decoding_steps / num_large_model_steps
 
 def simulation_benchmark(target_model : LMBackend, draft_model: LMBackend, dataloader: DataLoader, T=0.6, top_p=0.9, 

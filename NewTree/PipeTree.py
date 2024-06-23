@@ -2,12 +2,12 @@ import torch
 from torch.nn.functional import softmax
 from .Tree import BatchTree
 import time
-from FastHesse.Engine.llm_pipe import LLMEngine
+from FastHesse.New_Engine.backend import LMBackend
 from .utils import get_sampling_logits, ChildrenAccept
 import torch.distributed as dist
 class PipeTree_Draft(BatchTree):
     def __init__(self, 
-                 draft_model_engine: LLMEngine,
+                 draft_model_engine: LMBackend,
                  prefix :torch.LongTensor,
                  max_length = 256,
                  device :str = 'cpu',
@@ -22,7 +22,6 @@ class PipeTree_Draft(BatchTree):
                  idx=0,
                  ) -> None:
         super().__init__(device=device, max_length=max_length, batch_size=batch_size)
-        assert self.max_length == draft_model_engine.max_length
         self.max_target_seq = max_target_seq
         self.draft_model_engine = draft_model_engine
         self.grow_map = grow_map

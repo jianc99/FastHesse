@@ -81,9 +81,6 @@ class KVCache(nn.Module):
     def update(self, input_pos, k_val, v_val):
         # input_pos: [S], k_val: [B, H, S, D]
         assert input_pos.shape[0] == k_val.shape[2]
-
-        # k_out = self.k_cache
-        # v_out = self.v_cache
         # k_out[:, :, input_pos] = k_val
         # v_out[:, :, input_pos] = v_val
         self.k_cache.index_copy_(dim=-2, index=input_pos, source=k_val)

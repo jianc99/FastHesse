@@ -52,11 +52,11 @@ def _select_kv_heads(num_kv_heads, rank_group:list):
     return start, end
 
 def init_dist() -> Optional[int]:
-    rank = _get_global_rank()
+    global_rank = _get_global_rank()
     world_size = _get_world_size()
-    torch.cuda.set_device(rank)
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
-    return rank
+    torch.cuda.set_device(global_rank)
+    dist.init_process_group(backend="nccl", rank=global_rank, world_size=world_size)
+    return global_rank
 
 
 def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [], rank_group=None, num_kv_heads = None, num_heads = None, head_dim = None) -> None:

@@ -10,10 +10,13 @@ conda activate hesse
 
 ``` bash
 # pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121
-2.5.0.dev20240615+cu121
-2.5.0.dev20240622+cu118
+# 2.5.0.dev20240615+cu121
+# 2.5.0.dev20240622+cu118
+# 2.5.0.dev20240622+cu124
+# pip install torch==2.5.0.dev20240622+cu124 --index-url https://download.pytorch.org/whl/nightly/cu124/
 pip install torch==2.5.0.dev20240613+cu121 --index-url https://download.pytorch.org/whl/nightly/cu121/
 pip install transformers==4.36.2
+pip install numpy=1.26.3
 pip install protobuf
 pip install sentencepiece
 pip install datasets==2.16.1
