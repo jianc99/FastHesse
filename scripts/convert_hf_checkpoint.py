@@ -18,7 +18,7 @@ import torch
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from FastHesse.New_Engine.model import ModelArgs
+from FastHesse.Engine.model import ModelArgs
 
 
 @torch.inference_mode()

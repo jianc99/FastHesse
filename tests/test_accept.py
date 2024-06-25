@@ -1,21 +1,21 @@
 import sys
 sys.path.append("..")
 import argparse
-import time
+from pathlib import Path
 import torch
 import torch.distributed as dist
 from transformers import DataCollatorForLanguageModeling, AutoTokenizer
 from FastHesse.Tree.BatchTree import BatchSTreeTest
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
-from FastHesse.Engine.llm_pipe import LLMEngine
 from FastHesse.Data.data_converter import convert_wiki_dataset, convert_cnn_dataset, convert_c4_dataset
 from FastHesse.Tree.utils import cuda_graph_for_sampling_argmax
-from FastHesse.Engine.utils import setup_seed, initialized_dist_spec
+from FastHesse.Engine.utlis import setup_seed
+from FastHesse.Engine.backend import LMBackend
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', default="JackFram/llama-68m", type=str, help='model')
-parser.add_argument('--target', default="princeton-nlp/Sheared-LLaMA-1.3B", type=str, help='target model')
+parser.add_argument('--model', type=Path, default=Path("checkpoints/meta-llama/Llama-2-7b-hf/model.pth"), help='model')
+parser.add_argument('--target', type=Path, default=Path("checkpoints/meta-llama/Llama-2-70b-hf/model.pth"), help='target model')
 parser.add_argument('--dataset', type=str, default="cnn", help='dataset path')
 parser.add_argument('--start', type=int, default=0, help='start')
 parser.add_argument('--end', type=int, default=200, help='end')
@@ -29,14 +29,23 @@ parser.add_argument('--dst', type=str, default="btree_acc.pt", help='destination
 parser.add_argument('--target_group', nargs='+', type=int, help='Target group of ranks')
 # Draft model information
 parser.add_argument('--draft_group', nargs='+', type=int, help='Target group of ranks')
+parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
 args = parser.parse_args()
-# print(args)
+
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+global print
+from FastHesse.Engine.tp import init_dist
+use_tp = True
+if use_tp:
+    global_rank = init_dist()
+if use_tp:
+    if global_rank != 0:
+        # only print on rank 0
+        print = lambda *args, **kwargs: None
 setup_seed(args.seed)
-target_global_group, draft_global_group = initialized_dist_spec(args)
-global_rank=dist.get_rank()
 BATCH_SIZE = 1
 
-def simulation_fast(target_model : LLMEngine, draft_model: LLMEngine, dataloader: DataLoader, T=0.6, top_p=0.9, 
+def simulation_fast(target_model : LMBackend, draft_model: LMBackend, dataloader: DataLoader, T=0.6, top_p=0.9, 
             max_length=512, grow_map=None, sampling_callables = None,
             sample_gather_indices = None, max_width=32):
     num_eval_steps = len(dataloader)
@@ -55,7 +64,6 @@ def simulation_fast(target_model : LLMEngine, draft_model: LLMEngine, dataloader
                                    sampling_callables=sampling_callables, sample_gather_indices = sample_gather_indices, batch_size=BATCH_SIZE, max_target_seq=256
                                     )
             longest=128
-
             while longest < 256 and terminate == False:
                 spectree.construct_grow_map()
                 num_nodes, terminate, accept_pos = spectree.verify()
@@ -65,8 +73,8 @@ def simulation_fast(target_model : LLMEngine, draft_model: LLMEngine, dataloader
                     accept_list[accept_pos]+=1
                 else:
                     accept_list[0]+=1
-            draft_model.llm.kv_cache.clear()
-            target_model.llm.kv_cache.clear()
+            draft_model.clear_kv()
+            target_model.clear_kv()
             num_decoding_steps += (num_nodes.sum() - input_ids.shape[1]*BATCH_SIZE)
             if dist.get_rank() == 0:
                 for i in range(BATCH_SIZE):
@@ -93,12 +101,12 @@ else:
 data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 dataloader = DataLoader(tokenized_dataset_eval, batch_size=BATCH_SIZE, collate_fn=data_collator, shuffle=False, drop_last=True)
 
-mask = torch.full((1+args.W, 1+args.W), 0)
-mask[:,0]=1
+mask = torch.full((1+args.W, 1+args.W), 0, dtype=torch.bool)
+mask[:,0]= True
 depth=[0]
 successors = [list(range(1, args.W+1))]
 for i in range(1,args.W+1):
-    mask[i,i]=1
+    mask[i,i]= True
     depth.append(1)
     successors.append([])
 grow_map={
@@ -116,10 +124,9 @@ branch_lists = grow_map['branches']
 draft_step = len(grow_map["roots"])
 
 MAX_LEN = args.M + tree_size
-TARGET_MODEL_NAME = args.target
-DRAFT_MODEL_NAME = args.model
-DTYPE = torch.float16
-DEVICE = torch.device("cuda", global_rank)
+TARGET_MODEL_CHECKPOINT = args.target
+DRAFT_MODEL_CHECKPOINT = args.model
+DTYPE = torch.bfloat16
 
 sampling_callables = {}
 sample_gather_indices = {}
@@ -139,14 +146,21 @@ for i in range(draft_step - 1):
     ith_gather_list = torch.cat(ith_gather_list)
     sample_gather_indices[i] = ith_gather_list
 
-cg_list_target = [tree_size]
-cg_list_draft = [sum(x) for x in branch_lists]
-cg_list_draft.append(1)
+dec_list_target = [tree_size]
+dec_list_draft = [sum(x) for x in branch_lists]
+dec_list_draft.append(1)
 
-draft_model =  LLMEngine(max_length=MAX_LEN, model_name=DRAFT_MODEL_NAME, device=DEVICE, batch_size=BATCH_SIZE, dtype=torch.float16, global_group=draft_global_group)
-draft_model.initialize_cuda_graph(cg_list_draft)
-target_model = LLMEngine(max_length=MAX_LEN, model_name=TARGET_MODEL_NAME, device=DEVICE, batch_size=BATCH_SIZE, dtype=torch.float16, global_group=target_global_group)
-target_model.initialize_cuda_graph(cg_list_target)
+draft_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=dec_list_draft)
+draft_model.load_model(DRAFT_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.draft_group)
+if args.compile:
+    draft_model.compile()
+draft_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
+
+target_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=dec_list_target)
+target_model.load_model(TARGET_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.target_group)
+if args.compile:
+    target_model.compile()
+target_model.setup_caches(max_batch_size=BATCH_SIZE, max_seq_length=MAX_LEN)
 
 simulation_fast(target_model=target_model, draft_model=draft_model, dataloader=dataloader, T=args.T, top_p=args.P,
                                     max_length=MAX_LEN, grow_map = grow_map, sampling_callables=sampling_callables, sample_gather_indices = sample_gather_indices, max_width=args.W)

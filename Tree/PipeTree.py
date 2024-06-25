@@ -2,12 +2,94 @@ import torch
 from torch.nn.functional import softmax
 from .Tree import BatchTree
 import time
-from FastHesse.Engine.llm_pipe import LLMEngine
+from FastHesse.Engine.backend import LMBackend
 from .utils import get_sampling_logits, ChildrenAccept
+
 import torch.distributed as dist
+def init_cache(model:LMBackend):
+    num_layers = len(model.model.layers)
+    dtype = model.model.layers[0].attention.kv_cache.k_cache.dtype
+    device = model.model.layers[0].attention.kv_cache.k_cache.device
+    cache_shape = model.model.layers[0].attention.kv_cache.k_cache.shape
+    k_cache = torch.zeros((num_layers, cache_shape[0], cache_shape[1], cache_shape[2], cache_shape[3]), dtype=dtype, device=device)
+    v_cache = torch.zeros((num_layers, cache_shape[0], cache_shape[1], cache_shape[2], cache_shape[3]), dtype=dtype, device=device)
+    return k_cache, v_cache
+
+@torch.inference_mode()
+def copy_to_model(model:LMBackend, k_cache, v_cache):
+     for index, b in enumerate(model.model.layers):
+            b.attention.kv_cache.k_cache.copy_(k_cache[index])
+            b.attention.kv_cache.v_cache.copy_(v_cache[index])
+
+@torch.inference_mode()
+def cuda_graph_for_copy_to_model(model, k_cache, v_cache, n_warmups=3, mempool=None):
+    
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        for _ in range(n_warmups):
+            copy_to_model(model, k_cache, v_cache)
+        s.synchronize()
+    torch.cuda.current_stream().wait_stream(s)
+    time.sleep(1)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, pool=mempool):
+        copy_to_model(model, k_cache, v_cache)
+    def run():
+        graph.replay()
+    return run
+
+
+@torch.inference_mode()
+def copy_from_model(model:LMBackend, k_cache, v_cache):
+     for index, b in enumerate(model.model.layers):
+            k_cache[index].copy_(b.attention.kv_cache.k_cache)
+            v_cache[index].copy_(b.attention.kv_cache.v_cache)
+
+@torch.inference_mode()
+def gather_kv(k_cache, v_cache, indices, offset):
+    indices_len = indices.shape[1]
+    storage_ids = torch.arange(0, indices.shape[1], dtype=torch.long, device=k_cache.device)
+    num_layers, batch_size, num_heads, seq_length, head_dim = k_cache.shape
+    indices = indices.unsqueeze(0).unsqueeze(2).unsqueeze(4)
+    indices = indices.expand(num_layers, -1, num_heads, -1, head_dim)
+    new_k_cache = torch.gather(k_cache, 3, indices)
+    new_v_cache = torch.gather(v_cache, 3, indices)
+    # k_cache.index_copy_(
+    #     dim=-2, index=storage_ids, source=new_k_cache
+    # )
+    # v_cache.index_copy_(
+    #     dim=-2, index=storage_ids, source=new_v_cache
+    # )
+    k_cache[...,offset:offset+indices_len,:] = new_k_cache
+    v_cache[...,offset:offset+indices_len,:] = new_v_cache
+
+# @torch.inference_mode()
+# def cuda_graph_for_gather_kv(
+#                 device="cuda:0", 
+#                 k_cache=None, v_cache=None, max_len=256,
+#                 n_warmups=3, mempool=None):
+    
+#     static_indices = torch.full((k_cache.shape[1], max_len), 1, dtype=torch.long, device=device)
+#     s = torch.cuda.Stream()
+#     s.wait_stream(torch.cuda.current_stream())
+#     with torch.cuda.stream(s):
+#         for _ in range(n_warmups):
+#             gather_kv(k_cache, v_cache, static_indices)
+#         s.synchronize()
+#     torch.cuda.current_stream().wait_stream(s)
+#     time.sleep(1)
+#     graph = torch.cuda.CUDAGraph()
+#     with torch.cuda.graph(graph, pool=mempool):
+#         gather_kv(k_cache, v_cache, static_indices)
+#     def run(indices):
+#         static_indices.copy_(indices)
+#         graph.replay()
+#     return run
+
 class PipeTree_Draft(BatchTree):
     def __init__(self, 
-                 draft_model_engine: LLMEngine,
+                 draft_model_engine: LMBackend,
                  prefix :torch.LongTensor,
                  max_length = 256,
                  device :str = 'cpu',
@@ -22,7 +104,6 @@ class PipeTree_Draft(BatchTree):
                  idx=0,
                  ) -> None:
         super().__init__(device=device, max_length=max_length, batch_size=batch_size)
-        assert self.max_length == draft_model_engine.max_length
         self.max_target_seq = max_target_seq
         self.draft_model_engine = draft_model_engine
         self.grow_map = grow_map
@@ -39,39 +120,47 @@ class PipeTree_Draft(BatchTree):
         self.draft_rank0=draft_rank0
         self.idx = idx
 
-        self.k_cache = self.draft_model_engine.llm.kv_cache.k_cache.clone()
-        self.v_cache = self.draft_model_engine.llm.kv_cache.v_cache.clone()
-        self.k_cache.zero_()
-        self.v_cache.zero_()
+        self.k_cache, self.v_cache = init_cache(draft_model_engine)
+        # self.gather_kv = cuda_graph_for_gather_kv(self.device, self.k_cache, self.v_cache, self.max_target_seq)
+        self.gather_kv=gather_kv
 
         tree_mask :torch.Tensor = self.grow_map["mask"].to(self.device)
-        tree_mask = (tree_mask == 0).type(self.dtype)
-        tree_mask.masked_fill_(tree_mask > 0, torch.finfo(self.dtype).min)
+        tree_mask = (tree_mask == 1).type(torch.bool)
         self.initialize(None)
         self.set_prefix(prefix=prefix)
 
         self.tree_size = self.grow_map["size"]
         self.tree_mask = tree_mask
 
-        self.attn_mask = torch.full((self.batch_size, 1, self.tree_size ,self.max_length), torch.tensor(torch.finfo(self.dtype).min, device=device), device=device).to(self.dtype)
+        self.attn_mask = torch.full((self.batch_size, 1, self.tree_size ,self.max_length), 0, dtype=torch.bool, device=device)
 
         self.depth = self.grow_map["depth"].repeat(self.batch_size,1).to(self.device)
 
         self.tree_buffer = torch.zeros((self.batch_size, self.tree_size),device=self.device).long()
-        self.draft_logits = torch.zeros((self.batch_size, self.tree_size, vocab_size), dtype=torch.float32).to(self.device)
+        self.draft_logits = torch.zeros((self.batch_size, self.tree_size, vocab_size), dtype=torch.bfloat16).to(self.device)
 
         self.make_inference_para_for_first_itr(prefix.size(1))
 
-        self.draft_model_engine.llm.kv_cache.k_cache.copy_(self.k_cache)
-        self.draft_model_engine.llm.kv_cache.v_cache.copy_(self.v_cache)
+        # print(self.k_cache[0,0], self.v_cache[0,0])
+        torch.cuda.synchronize()
+        t1 = time.time()
+        copy_to_model(model=draft_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
+        torch.cuda.synchronize()
+        t2 = time.time()
 
-        self.draft_model_engine.forward(input_ids=self.tokens[:, :prefix.size(1)], 
+        self.draft_model_engine.encode(input_ids=self.tokens[:, :prefix.size(1)], 
                             storage_ids=self.prefill_storage_ids, 
                             position_ids=self.prefill_position_ids,
                             attention_mask=self.prefill_mask)
-        
-        self.k_cache.copy_(self.draft_model_engine.llm.kv_cache.k_cache)
-        self.v_cache.copy_(self.draft_model_engine.llm.kv_cache.v_cache)
+        torch.cuda.synchronize()
+        t3 = time.time()
+        copy_from_model(model=draft_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
+        torch.cuda.synchronize()
+        t4 = time.time()
+        print(f"Draft copy:{t2-t1}{t4-t3}")
+
+        # print(self.k_cache[0,0], self.v_cache[0,0])
+        # time.sleep(1000)
 
         control_tensor = torch.tensor([idx],device=self.device)
         dist.broadcast(control_tensor, draft_rank0)
@@ -81,19 +170,6 @@ class PipeTree_Draft(BatchTree):
         self.tree_buffer[:, 0] = root_tokens.squeeze(1)
         
         # self.prepare_for_next_iter()
-    def gather_kv_incremental(self, indices: list[int], offset:int, batch_idx=None):
-        if batch_idx == None:
-            self.k_cache[..., offset:offset + len(indices), :] = self.k_cache[..., indices, :]
-            self.v_cache[..., offset:offset + len(indices), :] = self.v_cache[..., indices, :]
-
-            self.k_cache[..., offset + len(indices):, :] = 0.0
-            self.v_cache[..., offset + len(indices):, :] = 0.0
-        else:
-            self.k_cache[:, batch_idx, :, offset:offset + len(indices), :] = self.k_cache[:, batch_idx, :, indices, :]
-            self.v_cache[:, batch_idx, :, offset:offset + len(indices), :] = self.v_cache[:, batch_idx, :, indices, :]
-
-            self.k_cache[:, batch_idx, :, offset + len(indices):, :] = 0.0
-            self.v_cache[:, batch_idx, :, offset + len(indices):, :] = 0.0
 
     @torch.inference_mode()
     def collective_grow_static(self, idx_list, n_branch_list :list[int], benchmark=False, grow_step = None):
@@ -119,7 +195,7 @@ class PipeTree_Draft(BatchTree):
                     t2 = time.time()
                     x1 += (t2 - t1)
         
-        draft_model_outputs = self.draft_model_engine.forward(
+        draft_model_outputs = self.draft_model_engine.inference(
             input_ids = self.tree_buffer[:, indices],
             position_ids = self.position_ids[:, indices],
             attention_mask = self.attn_mask[:,:,indices,:],
@@ -167,6 +243,7 @@ class PipeTree_Draft(BatchTree):
     @torch.inference_mode()
     def verify(self, benchmark = False):
         # Get verify result from target group
+        # copy_to_model(self.draft_model_engine, self.k_cache, self.v_cache)
         if benchmark:
             torch.cuda.synchronize()
             t1 = time.time()
@@ -180,6 +257,7 @@ class PipeTree_Draft(BatchTree):
         terminal = terminal.item()==1
         batch_accept_list=[]
         batch_accept_list_kv=[]
+        kv_start = self.num_nodes.min()
         for i in range(self.batch_size):
              list=[]
              for j in range(self.draft_step):
@@ -195,14 +273,22 @@ class PipeTree_Draft(BatchTree):
             torch.cuda.synchronize()
             t3 = time.time()
 # Gather KV Cache
+        torch.cuda.synchronize()
+        start = time.time()
         if not terminal:
-            for batch_idx in range(self.batch_size):
-                accept_list = batch_accept_list[batch_idx]
-                accept_list_kv = batch_accept_list_kv[batch_idx]
-                accept_length = len(accept_list)
-                self.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
+            full_indices = torch.arange(kv_start, self.num_nodes.max(), device=self.device).unsqueeze(0).repeat(self.batch_size, 1).long()
+            for i in range(self.batch_size):
+                accept_list_kv=batch_accept_list_kv[i]
+                accept_length = len(accept_list_kv)
+                for j in range(len(accept_list_kv)):
+                    full_indices[i,self.num_nodes[i]-kv_start-accept_length+j] = accept_list_kv[j]
+            # self.draft_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
+            self.gather_kv(self.k_cache, self.v_cache, full_indices, kv_start)
             self.tree_buffer[:, 0]= bonus_tokens.squeeze(1)
-
+        torch.cuda.synchronize()
+        end = time.time()
+        print(f"Draft: {end-start}")
+        # copy_from_model(self.draft_model_engine, self.k_cache, self.v_cache)
         if benchmark:
             torch.cuda.synchronize()
             t4 = time.time()
@@ -216,8 +302,7 @@ class PipeTree_Draft(BatchTree):
     
     def construct_grow_map(self, benchmark = False):
 
-        self.draft_model_engine.llm.kv_cache.k_cache.copy_(self.k_cache)
-        self.draft_model_engine.llm.kv_cache.v_cache.copy_(self.v_cache)
+        copy_to_model(model=self.draft_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
 
         self.prepare_for_next_iter()
         if benchmark:
@@ -231,8 +316,7 @@ class PipeTree_Draft(BatchTree):
                 else:
                         self.collective_grow_static(self.grow_map_roots_gpu[i], self.grow_map['branches'][i], grow_step=i)
         
-        self.k_cache.copy_(self.draft_model_engine.llm.kv_cache.k_cache)
-        self.v_cache.copy_(self.draft_model_engine.llm.kv_cache.v_cache)
+        copy_from_model(model=self.draft_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
         
         if benchmark:
             return sample_time, compute_time
@@ -240,10 +324,8 @@ class PipeTree_Draft(BatchTree):
             return None
     
     def prepare_for_next_iter(self):
-        if self.num_nodes.max()+ 1 > self.max_target_seq:
-              return 
         self.make_inference_para_for_next_itr()
-        draft_model_outputs = self.draft_model_engine.forward(input_ids = self.tree_buffer[:,:1], 
+        draft_model_outputs = self.draft_model_engine.inference(input_ids = self.tree_buffer[:,:1], 
                                                     storage_ids=self.storage_ids[:1],
                                                     position_ids=self.position_ids[:, :1],
                                                     attention_mask=self.attn_mask[:,:,:1,:],
@@ -260,19 +342,19 @@ class PipeTree_Draft(BatchTree):
         # Draft Construct Tree and Target Verify
          self.attn_mask[:, :, :, -self.tree_size:] = self.tree_mask
          for idx in range(self.batch_size):
-            self.attn_mask[idx, :, :, :prefix_len] = 0.0
+            self.attn_mask[idx, :, :, :prefix_len] = True
          self.position_ids = (self.grow_map["depth"].to(self.device) + prefix_len).repeat(self.batch_size, 1)
          self.storage_ids = torch.arange(self.max_length-self.tree_size, self.max_length).to(self.device)
     
     def make_inference_para_for_next_itr(self):
          self.position_ids = self.depth + self.num_nodes.view(-1,1)
          for idx in range(self.batch_size):
-            self.attn_mask[idx, :, :, :self.num_nodes[idx]] = 0.0
+            self.attn_mask[idx, :, :, :self.num_nodes[idx]] = True
 
 
 class PipeTree_Target(BatchTree):
     def __init__(self, 
-                 target_model_engine: LLMEngine,
+                 target_model_engine: LMBackend,
                  prefix :torch.LongTensor,
                  temperature :float = 0.6,
                  top_p: float = 0.9,
@@ -301,21 +383,19 @@ class PipeTree_Target(BatchTree):
         self.draft_rank0=draft_rank0
         self.target_rank0=target_rank0
 
-        self.k_cache = self.target_model_engine.llm.kv_cache.k_cache.clone()
-        self.v_cache = self.target_model_engine.llm.kv_cache.v_cache.clone()
-        self.k_cache.zero_()
-        self.v_cache.zero_()
+        self.k_cache, self.v_cache = init_cache(target_model_engine)
+        # self.gather_kv = cuda_graph_for_gather_kv(self.device, self.k_cache, self.v_cache, self.max_target_seq)
+        self.gather_kv = gather_kv
 
         tree_mask :torch.Tensor = self.grow_map["mask"].to(self.device)
-        tree_mask = (tree_mask == 0).type(self.dtype)
-        tree_mask.masked_fill_(tree_mask > 0, torch.finfo(self.dtype).min)
+        tree_mask = (tree_mask == 1).type(torch.bool)
         self.initialize(None)
         self.set_prefix(prefix=prefix)
 
         self.tree_size = self.grow_map["size"]
         self.tree_mask = tree_mask
 
-        self.attn_mask = torch.full((self.batch_size, 1, self.tree_size ,self.max_length), torch.tensor(torch.finfo(self.dtype).min, device=device), device=device).to(self.dtype)
+        self.attn_mask = torch.full((self.batch_size, 1, self.tree_size ,self.max_length), 0, dtype=torch.bool, device=device)
 
         self.depth = self.grow_map["depth"].repeat(self.batch_size,1).to(self.device)
 
@@ -323,17 +403,22 @@ class PipeTree_Target(BatchTree):
 
         self.make_inference_para_for_first_itr(prefix.size(1))
 
-        self.target_model_engine.llm.kv_cache.k_cache.copy_(self.k_cache)
-        self.target_model_engine.llm.kv_cache.v_cache.copy_(self.v_cache)
-     
-        output = self.target_model_engine.forward(input_ids=self.tokens[:, :prefix.size(1)], 
+        torch.cuda.synchronize()
+        t1 = time.time()
+        copy_to_model(model=target_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
+        torch.cuda.synchronize()
+        t2 = time.time()
+
+        output = self.target_model_engine.encode(input_ids=self.tokens[:, :prefix.size(1)], 
                             storage_ids=self.prefill_storage_ids, 
                             position_ids=self.prefill_position_ids,
-                            attention_mask=self.prefill_mask,
-                            )
-        
-        self.k_cache.copy_(self.target_model_engine.llm.kv_cache.k_cache)
-        self.v_cache.copy_(self.target_model_engine.llm.kv_cache.v_cache)
+                            attention_mask=self.prefill_mask)
+        torch.cuda.synchronize()
+        t3 = time.time()
+        copy_from_model(model=target_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
+        torch.cuda.synchronize()
+        t4 = time.time()
+        print(f"Target copy:{t2-t1}{t4-t3}")
         
         root_logits = output[:, -1:].clone()
         root_logits = get_sampling_logits(logits=root_logits, top_p=self.top_p, T=self.temperature, replicate=False)
@@ -342,20 +427,6 @@ class PipeTree_Target(BatchTree):
         dist.broadcast(root_tokens, target_rank0)
         
         self.prepare_for_next_iter()
-    
-    def gather_kv_incremental(self, indices: list[int], offset:int, batch_idx=None):
-        if batch_idx == None:
-            self.k_cache[..., offset:offset + len(indices), :] = self.k_cache[..., indices, :]
-            self.v_cache[..., offset:offset + len(indices), :] = self.v_cache[..., indices, :]
-
-            self.k_cache[..., offset + len(indices):, :] = 0.0
-            self.v_cache[..., offset + len(indices):, :] = 0.0
-        else:
-            self.k_cache[:, batch_idx, :, offset:offset + len(indices), :] = self.k_cache[:, batch_idx, :, indices, :]
-            self.v_cache[:, batch_idx, :, offset:offset + len(indices), :] = self.v_cache[:, batch_idx, :, indices, :]
-
-            self.k_cache[:, batch_idx, :, offset + len(indices):, :] = 0.0
-            self.v_cache[:, batch_idx, :, offset + len(indices):, :] = 0.0
     
     @torch.inference_mode()
     def accept_step(self, parent_id :int, idx) ->ChildrenAccept:
@@ -383,20 +454,16 @@ class PipeTree_Target(BatchTree):
         if benchmark:
             torch.cuda.synchronize()
             t1 = time.time()
-        self.target_model_engine.llm.kv_cache.k_cache.copy_(self.k_cache)
-        self.target_model_engine.llm.kv_cache.v_cache.copy_(self.v_cache)
-        target_model_outputs = self.target_model_engine.forward(input_ids = self.tree_buffer, 
+        copy_to_model(model=self.target_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
+        target_model_outputs = self.target_model_engine.inference(input_ids = self.tree_buffer, 
                                     position_ids =self.position_ids, attention_mask = self.attn_mask,
                                     storage_ids=self.storage_ids)
-        self.k_cache.copy_(self.target_model_engine.llm.kv_cache.k_cache)
-        self.v_cache.copy_(self.target_model_engine.llm.kv_cache.v_cache)
+        copy_from_model(model=self.target_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
         if benchmark:
             torch.cuda.synchronize()
             t2 = time.time()
 
         self.target_logits :torch.FloatTensor = target_model_outputs[:, -self.tree_size:]
-        # print(self.target_logits)
-        # time.sleep(100)
         self.target_logits = get_sampling_logits(logits=self.target_logits, top_p=self.top_p, T=self.temperature, replicate=False)
         self.target_logits = softmax(self.target_logits / self.temperature, dim=-1)
         self.target_token = self.target_logits.view(-1, self.vocab_size).multinomial(num_samples=1).view(self.batch_size, self.tree_size)
@@ -404,6 +471,7 @@ class PipeTree_Target(BatchTree):
         terminal = False
         batch_accept_list=[]
         batch_accept_list_kv= []
+        kv_start = self.num_nodes.min()
         for batch_idx in range(self.batch_size):
             accept_list = [0]
             while True:
@@ -431,17 +499,28 @@ class PipeTree_Target(BatchTree):
                     terminal = True
                     break
                 bonus_tokens[batch_idx, 0]= bonus_token
+
         if benchmark:
             torch.cuda.synchronize()
             t3 = time.time()
+        torch.cuda.synchronize()
+        start = time.time()
 # Gather KV Cache
-        if not terminal:
-            for batch_idx in range(self.batch_size):
-                accept_list = batch_accept_list[batch_idx]
-                accept_list_kv = batch_accept_list_kv[batch_idx]
-                accept_length = len(accept_list)
-                self.gather_kv_incremental(accept_list_kv, self.num_nodes[batch_idx]-accept_length, batch_idx)
+        if self.num_nodes.max() + 1 >= self.max_target_seq:
+             terminal=True
 
+        if not terminal:
+            full_indices = torch.arange(kv_start, self.num_nodes.max(), device=self.device).unsqueeze(0).repeat(self.batch_size, 1).long()
+            for i in range(self.batch_size):
+                accept_list_kv=batch_accept_list_kv[i]
+                accept_length = len(accept_list_kv)
+                for j in range(len(accept_list_kv)):
+                    full_indices[i,self.num_nodes[i]-kv_start-accept_length+j] = accept_list_kv[j]
+            self.gather_kv(self.k_cache, self.v_cache, full_indices, kv_start)
+        # copy_from_model(model=self.target_model_engine, k_cache=self.k_cache, v_cache=self.v_cache)
+        torch.cuda.synchronize()
+        end = time.time()
+        print(f"Target: {end-start}")
         target_accept_list = torch.full((self.batch_size, self.draft_step),-1,device=self.device)
         for i in range(self.batch_size):
              accept_list=batch_accept_list[i]
@@ -476,8 +555,6 @@ class PipeTree_Target(BatchTree):
         super().verbose()
     
     def prepare_for_next_iter(self):
-        if self.num_nodes.max()+ 1 > self.max_target_seq:
-              return 
         self.make_inference_para_for_next_itr()
 
     def make_inference_para_for_first_itr(self, prefix_len):
@@ -489,11 +566,11 @@ class PipeTree_Target(BatchTree):
         # Draft Construct Tree and Target Verify
          self.attn_mask[:, :, :, -self.tree_size:] = self.tree_mask
          for idx in range(self.batch_size):
-            self.attn_mask[idx, :, :, :prefix_len] = 0.0
+            self.attn_mask[idx, :, :, :prefix_len] = True
          self.position_ids = (self.grow_map["depth"].to(self.device) + prefix_len).repeat(self.batch_size, 1)
          self.storage_ids = torch.arange(self.max_length-self.tree_size, self.max_length).to(self.device)
     
     def make_inference_para_for_next_itr(self):
          self.position_ids = self.depth + self.num_nodes.view(-1,1)
          for idx in range(self.batch_size):
-            self.attn_mask[idx, :, :, :self.num_nodes[idx]] = 0.0
+            self.attn_mask[idx, :, :, :self.num_nodes[idx]] = True

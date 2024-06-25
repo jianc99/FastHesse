@@ -4,18 +4,20 @@ import argparse
 import time
 import torch
 import torch.distributed as dist
+from pathlib import Path
 from transformers import DataCollatorForLanguageModeling, AutoTokenizer
 from FastHesse.Tree.PipeTree import PipeTree_Draft, PipeTree_Target
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
-from FastHesse.Engine.llm_pipe import LLMEngine
+from FastHesse.Engine.backend import LMBackend
 from FastHesse.Data.data_converter import convert_wiki_dataset, convert_cnn_dataset, convert_c4_dataset
 from FastHesse.Tree.utils import cuda_graph_for_sampling_argmax
-from FastHesse.Engine.utils import setup_seed, initialized_dist_spec
+from FastHesse.Engine.utlis import setup_seed
+from FastHesse.Engine.tp import init_dist
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', default="JackFram/llama-68m", type=str, help='model')
-parser.add_argument('--target', default="princeton-nlp/Sheared-LLaMA-1.3B", type=str, help='target model')
+parser.add_argument('--model', type=Path, default=Path("checkpoints/meta-llama/Llama-2-7b-hf/model.pth"), help='model')
+parser.add_argument('--target', type=Path, default=Path("checkpoints/meta-llama/Llama-2-70b-hf/model.pth"), help='target model')
 parser.add_argument('--growmap', type=str, default="1.3b-70b_tree.pt", help='growmap path')
 parser.add_argument('--dataset', type=str, default="cnn", help='dataset path')
 parser.add_argument('--start', type=int, default=0, help='start')
@@ -26,21 +28,24 @@ parser.add_argument('--B', type=int, default=16, help='batch_size')
 parser.add_argument('--M', type=int, default=256, help='max length')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 parser.add_argument('--Mode', type=str, default="fast")
+parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
 
 # Target model information
 parser.add_argument('--target_group', nargs='+', type=int, help='Target group of ranks')
 # Draft model information
 parser.add_argument('--draft_group', nargs='+', type=int, help='Target group of ranks')
 args = parser.parse_args()
-# print(args)
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+global print
+global_rank = init_dist()
 setup_seed(args.seed)
-target_global_group, draft_global_group = initialized_dist_spec(args)
-# dist.barrier()
-# print(target_pp_config,draft_pp_config)
+if not (global_rank == args.target_group[0] or global_rank == args.draft_group[0]):
+    print = lambda *args, **kwargs: None
+
 global_rank=dist.get_rank()
 BATCH_SIZE = args.B
 
-def simulation_fast(draft_model: LLMEngine, dataloader: DataLoader, max_length=512, grow_map=None, sampling_callables = None, sample_gather_indices = None, target_rank0=0, draft_rank0=0):
+def simulation_fast(draft_model: LMBackend, dataloader: DataLoader, max_length=512, grow_map=None, sampling_callables = None, sample_gather_indices = None, target_rank0=0, draft_rank0=0):
     num_eval_steps = len(dataloader)
     num_decoding_steps = 0
     num_large_model_steps = 0
@@ -103,7 +108,7 @@ def simulation_fast(draft_model: LLMEngine, dataloader: DataLoader, max_length=5
                 print("total time :{:.5f}s, latency :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / num_decoding_steps, num_decoding_steps, num_large_model_steps))
             control_tensor = torch.tensor([4],device=DEVICE)
             dist.broadcast(control_tensor,draft_rank0)
-            draft_model.llm.kv_cache.clear()
+            draft_model.clear_kv()
             batch_tree_1 = None
             batch_tree_2 = None
             dist.barrier()
@@ -112,7 +117,7 @@ def simulation_fast(draft_model: LLMEngine, dataloader: DataLoader, max_length=5
         dist.broadcast(control_tensor,draft_rank0)
     return num_decoding_steps / num_large_model_steps
 
-def simulation_benchmark(draft_model: LLMEngine, dataloader: DataLoader, max_length=512, grow_map=None, sampling_callables = None, sample_gather_indices = None, target_rank0=0, draft_rank0=0):
+def simulation_benchmark(draft_model: LMBackend, dataloader: DataLoader, max_length=512, grow_map=None, sampling_callables = None, sample_gather_indices = None, target_rank0=0, draft_rank0=0):
     num_eval_steps = len(dataloader)
     num_decoding_steps = 0
     num_large_model_steps = 0
@@ -169,8 +174,7 @@ def simulation_benchmark(draft_model: LLMEngine, dataloader: DataLoader, max_len
                 batch_tree_2.receive_result()
                 torch.cuda.synchronize()
                 t7 = time.time()
-                if global_rank == draft_rank0:
-                    print(t4-t3, t5-t4, t6-t5, t7-t6, t7-t3)
+                print(t4-t3, t5-t4, t6-t5, t7-t6, t7-t3)
     
 
                 num_large_model_steps+=1
@@ -188,12 +192,11 @@ def simulation_benchmark(draft_model: LLMEngine, dataloader: DataLoader, max_len
             t2 = time.time()
             num_decoding_steps += (num_nodes.sum() - input_ids.shape[1]*BATCH_SIZE)
             total_time += (t2 - t1)
-            if dist.get_rank() == draft_rank0:
-                # for i in range(BATCH_SIZE//2):
-                #     print(tokenizer.decode(batch_tree_1.tokens[i,:batch_tree_1.num_nodes[i]]))
-                # for i in range(BATCH_SIZE//2):
-                #     print(tokenizer.decode(batch_tree_2.tokens[i,:batch_tree_2.num_nodes[i]]))
-                print("total time :{:.5f}s, latency :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / num_decoding_steps, num_decoding_steps, num_large_model_steps))
+            # for i in range(BATCH_SIZE//2):
+            #     print(tokenizer.decode(batch_tree_1.tokens[i,:batch_tree_1.num_nodes[i]]))
+            # for i in range(BATCH_SIZE//2):
+            #     print(tokenizer.decode(batch_tree_2.tokens[i,:batch_tree_2.num_nodes[i]]))
+            print("total time :{:.5f}s, latency :{:.5f}s, decoding step: {}, large model step: {}".format(total_time, total_time / num_decoding_steps, num_decoding_steps, num_large_model_steps))
             control_tensor = torch.tensor([4],device=DEVICE)
             dist.broadcast(control_tensor,draft_rank0)
             draft_model.llm.kv_cache.clear()
@@ -206,20 +209,24 @@ def simulation_benchmark(draft_model: LLMEngine, dataloader: DataLoader, max_len
     return num_decoding_steps / num_large_model_steps
 
 if global_rank in args.target_group:
-    # time.sleep(100)
+    use_tp = len(args.target_group)>1
     dist.barrier()
     path = args.growmap
     grow_map = torch.load(path)
     tree_size = grow_map["size"]
+    draft_step = len(grow_map["roots"])
+
     MAX_LEN = args.M + tree_size
-    TARGET_MODEL_NAME = args.target
-    DTYPE = torch.float16
-    DEVICE = torch.device("cuda", global_rank)
-    # DEVICE = torch.device("cuda", 0)
+    TARGET_MODEL_CHECKPOINT = args.target
+    DTYPE = torch.bfloat16
+
     cg_list_target = [tree_size]
-    target_model = LLMEngine(max_length=MAX_LEN, model_name=TARGET_MODEL_NAME, device=DEVICE, batch_size=BATCH_SIZE//2, dtype=torch.float16, global_group=target_global_group)
-    target_model.initialize_cuda_graph(cg_list_target)
-    # dist.barrier()
+
+    target_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=cg_list_target)
+    target_model.load_model(TARGET_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.target_group)
+    if args.compile:
+        target_model.compile()
+    target_model.setup_caches(max_batch_size=BATCH_SIZE//2, max_seq_length=MAX_LEN, max_depth=draft_step)
     target_rank0 = args.target_group[0]
     draft_rank0 = args.draft_group[0]
     mini_batch_1_tree = None
@@ -242,26 +249,25 @@ if global_rank in args.target_group:
             elif control_tensor[0] == 2:
                 if args.Mode == "benchmark":
                     _, t1, t2, t3, t4, _ = mini_batch_1_tree.verify(benchmark=True)
-                    if global_rank == target_rank0:
-                        print(f"Receive time: {t1}; Inference time: {t2}; Verify loop: {t3}; Gather KV and send result: {t4}")
+                    print(f"Receive time: {t1}; Inference time: {t2}; Verify loop: {t3}; Gather KV and send result: {t4}")
                 else:
                     mini_batch_1_tree.verify()
             elif control_tensor[0] == 3:
                 if args.Mode == "benchmark":
                     _, t1, t2, t3, t4, _ = mini_batch_2_tree.verify(benchmark=True)
-                    if global_rank == target_rank0:
-                        print(f"Receive time: {t1}; Inference time: {t2}; Verify loop: {t3}; Gather KV and send result: {t4}")
+                    print(f"Receive time: {t1}; Inference time: {t2}; Verify loop: {t3}; Gather KV and send result: {t4}")
                 else:
                     mini_batch_2_tree.verify()
             elif control_tensor[0] == 4:
-                target_model.llm.kv_cache.clear()
+                target_model.clear_kv()
                 mini_batch_1_tree = None
                 mini_batch_2_tree = None
                 dist.barrier()
             elif control_tensor[0] == 5:
                 break
+
 elif global_rank in args.draft_group:
-    # dist.barrier()
+    use_tp = len(args.draft_group)>1
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=False)
     tokenizer.pad_token = tokenizer.eos_token
     if args.dataset == 'wiki':
@@ -281,10 +287,8 @@ elif global_rank in args.draft_group:
     draft_step = len(grow_map["roots"])
 
     MAX_LEN = args.M + tree_size
-    DRAFT_MODEL_NAME = args.model
-    DTYPE = torch.float16
-    DEVICE = torch.device("cuda", global_rank)
-    # DEVICE = torch.device("cuda", 0)
+    DRAFT_MODEL_CHECKPOINT = args.model
+    DTYPE = torch.bfloat16
 
     sampling_callables = {}
     sample_gather_indices = {}
@@ -293,7 +297,7 @@ elif global_rank in args.draft_group:
         num_samples = max(branch_lists[i])
         sampling_callables[i] = cuda_graph_for_sampling_argmax(device=DEVICE,
             max_length=args.M, idx_len=idx_len, num_samples=num_samples,
-            temperature=args.T, tree_size=tree_size)  
+            temperature=args.T, tree_size=tree_size, dtype = DTYPE)  
     for i in range(draft_step - 1):
         ith_gather_list = []
         max_num_samples = max(branch_lists[i])
@@ -309,8 +313,11 @@ elif global_rank in args.draft_group:
     target_rank0 = args.target_group[0]
     draft_rank0 = args.draft_group[0]
 
-    draft_model =  LLMEngine(max_length=MAX_LEN, model_name=DRAFT_MODEL_NAME, device=DEVICE, batch_size=BATCH_SIZE//2, dtype=torch.float16,  global_group=draft_global_group)
-    draft_model.initialize_cuda_graph(cg_list_draft)
+    draft_model = LMBackend(dtype=DTYPE, device=DEVICE, dec_list=cg_list_draft)
+    draft_model.load_model(DRAFT_MODEL_CHECKPOINT, use_tp=use_tp, rank_group = args.draft_group)
+    if args.compile:
+        draft_model.compile()
+    draft_model.setup_caches(max_batch_size=BATCH_SIZE//2, max_seq_length=MAX_LEN, max_depth=draft_step)
     dist.barrier()
     dist.barrier()
     if args.Mode == "fast":

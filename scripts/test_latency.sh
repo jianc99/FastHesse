@@ -1,41 +1,4 @@
-export CUDA_VISIBLE_DEVICES=1,2,3,4,5
+export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7,8,9
 export OMP_NUM_THREADS=48
-# torchrun --nproc_per_node=8 --master_port=13456 tests/test_latency.py --B 2 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=8 --master_port=13456 tests/test_latency.py --B 4 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=8 --master_port=13456 tests/test_latency.py --B 8 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=8 --master_port=13456 tests/test_latency.py --B 16 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=8 --master_port=13456 tests/test_latency.py --B 32 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=8 --master_port=13456 tests/test_latency.py --B 64 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=8 --master_port=13456 tests/test_latency.py --B 128 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
 
-# torchrun --nproc_per_node=4 --master_port=13456 tests/test_latency.py --B 1 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=4 --master_port=13456 tests/test_latency.py --B 2 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=4 --master_port=13456 tests/test_latency.py --B 4 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=4 --master_port=13456 tests/test_latency.py --B 8 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=4 --master_port=13456 tests/test_latency.py --B 16 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=4 --master_port=13456 tests/test_latency.py --B 32 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-torchrun --nproc_per_node=4 --master_port=13456 tests/test_latency.py --B 64 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-
-# torchrun --nproc_per_node=5 --master_port=13456 tests/test_latency.py --B 1 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=5 --master_port=13456 tests/test_latency.py --B 2 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=5 --master_port=13456 tests/test_latency.py --B 4 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=5 --master_port=13456 tests/test_latency.py --B 8 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=5 --master_port=13456 tests/test_latency.py --B 16 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=5 --master_port=13456 tests/test_latency.py --B 32 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-torchrun --nproc_per_node=5 --master_port=13456 tests/test_latency.py --B 64 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 1 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 2 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 4 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 8 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 16 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 32 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 64 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-
-# torchrun --nproc_per_node=7 --master_port=13456 tests/test_latency.py --B 1 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=7 --master_port=13456 tests/test_latency.py --B 2 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=7 --master_port=13456 tests/test_latency.py --B 4 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=6 --master_port=13456 tests/test_latency.py --B 8 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=7 --master_port=13456 tests/test_latency.py --B 16 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=7 --master_port=13456 tests/test_latency.py --B 32 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
-# torchrun --nproc_per_node=7 --master_port=13456 tests/test_latency.py --B 64 --model meta-llama/Llama-2-70b-hf --M 288 --D 2 4 8 16 32 64 --P 128
+torchrun --standalone --nproc_per_node=8 --master_port=13456 tests/test_latency.py --maxlen 272 --declen_list 1 2 3 --prefixlen 128 --batch 1 --checkpoint_path checkpoints/meta-llama/Llama-2-70b-hf/model.pth --rank_group 0 1 2 3 4 5 6 7 --compile

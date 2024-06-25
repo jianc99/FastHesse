@@ -15,7 +15,7 @@ def _make_causal_mask(
     return mask
 
 class BatchTree:
-    def __init__(self, device :str = 'cpu', max_length = 512, dtype = torch.float16, batch_size = 1) -> None:
+    def __init__(self, device :str = 'cpu', max_length = 512, dtype = torch.bfloat16, batch_size = 1) -> None:
         self.tokens = torch.zeros(batch_size, max_length, device=device).long()
         self.Successors :list[list[int]] = []
         self.num_nodes = torch.zeros(batch_size,device=device).long()
@@ -23,7 +23,6 @@ class BatchTree:
         self.max_length = max_length
         self.dtype = dtype
         self.batch_size = batch_size
-
 
     def initialize(self, active_mark):
         self.position_ids = torch.zeros(self.batch_size,self.max_length).long().to(self.device)
@@ -34,7 +33,7 @@ class BatchTree:
         self.position_ids[:,:prefix.size(1)] = torch.arange(prefix.size(1)).repeat(self.batch_size,1)
         
         self.num_nodes += prefix.size(1)
-        self.full_attn_mask = _make_causal_mask((1, self.max_length),dtype=self.dtype, device=self.device)
+        self.full_attn_mask = torch.tril(torch.ones(self.max_length, self.max_length, dtype=torch.bool, device=self.device))
 
         
         

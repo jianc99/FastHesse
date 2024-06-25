@@ -1,65 +1,88 @@
 import sys
-sys.path.append("..")
-from FastHesse.Engine.llm_pipe import LLMEngine
-from FastHesse.Engine.utils import initialized_dist_baseline, make_causal_mask, setup_seed
-import argparse
 import time
+from pathlib import Path
+import sys
+sys.path.append("..")
 import torch
-import torch.distributed as dist
+import torch._dynamo.config
+import torch._inductor.config
+import argparse
+from FastHesse.Engine.backend import LMBackend
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--model', type=str, default="meta-llama/Llama-2-7b-hf",help='model')
-parser.add_argument('--T', type=int, default=1000, help='repeat times')
-parser.add_argument('--B', type=int, default=1, help='batch size')
-# parser.add_argument('--B', nargs='+', type=int, help='batch size list')
-parser.add_argument('--P', type=int, default=128, help='prefix length')
-parser.add_argument('--M', type=int, default=288, help='max length')
-# parser.add_argument('--D', type=int, default=1, help='dec length')
-parser.add_argument('--D', nargs='+', type=int, help='decoding length list')
-
+parser = argparse.ArgumentParser(description='Your CLI description.')
+parser.add_argument('--checkpoint_path', type=Path, default=Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"), help='Model checkpoint path.')
+parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
+parser.add_argument('--batch', type=int, help='batch size')
+parser.add_argument('--maxlen', type=int, help='max len')
+parser.add_argument('--prefixlen', type=int, help='prefix len')
+parser.add_argument('--declen_list', nargs='+', type=int, help='Group of dec len')
+parser.add_argument('--rank_group', nargs='+', type=int, help='Group of ranks')
 args = parser.parse_args()
-global_group = initialized_dist_baseline()
-setup_seed(123)
-local_rank = dist.get_rank()
-world_size = dist.get_world_size()
-if local_rank == 0:
-    print(args)
-PREFIX_LEN = args.P
-MAX_LEN = args.M
-dec_len_list = args.D
-MODEL_NAME = args.model
-DTYPE = torch.float16
-DEVICE = torch.device("cuda", local_rank)
-BATCH_SIZE = args.B
-T = args.T
-WARM_UP = 10
 
-llm = LLMEngine(max_length=MAX_LEN, model_name=args.model, device=DEVICE, batch_size=BATCH_SIZE, global_group=global_group, dtype=DTYPE)
-llm.initialize_cuda_graph(dec_len_list)
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+global print
+from FastHesse.Engine.tp import init_dist
+rank = init_dist()
+use_tp = len(args.rank_group)>1
+if use_tp:
+    if rank != 0:
+        # only print on rank 0
+        print = lambda *args, **kwargs: None
+print(f"Using device={device}")
 
-input_ids = torch.randint(low=3, high=30000, size=(BATCH_SIZE, PREFIX_LEN), device=DEVICE)
-attention_mask = make_causal_mask((MAX_LEN, MAX_LEN), dtype=DTYPE, device=DEVICE)
-attention_mask = attention_mask[None, None, :, :].repeat(BATCH_SIZE,1,1,1)
-position_ids = torch.arange(PREFIX_LEN, device=DEVICE).repeat(BATCH_SIZE,1)
-prefix_storage_ids = torch.arange(PREFIX_LEN, device=DEVICE)
-llm.forward(input_ids=input_ids, position_ids=position_ids, attention_mask=attention_mask[..., :PREFIX_LEN,:], storage_ids=prefix_storage_ids)
+checkpoint_path = args.checkpoint_path
+precision = torch.bfloat16
+max_seq_length = args.maxlen
+max_batch_size = args.batch
+prefix_len = args.prefixlen
+dec_list = args.declen_list
 
-for dec_len in dec_len_list:
-    input_ids = torch.randint(low=3, high=30000, size=(BATCH_SIZE, dec_len), device=DEVICE)
-    storage_ids = torch.arange(dec_len, device=DEVICE) + PREFIX_LEN
-    position_ids = storage_ids.clone().repeat(BATCH_SIZE,1)
-    attention_mask_decode = attention_mask[..., PREFIX_LEN: PREFIX_LEN + dec_len,:].clone()
-    for _ in range(WARM_UP):
-        llm.forward(input_ids=input_ids, position_ids=position_ids, attention_mask=attention_mask_decode, storage_ids=storage_ids)
+warm_up = 10
+T = 1000
 
-    torch.cuda.synchronize()
-    t1 = time.time()
-    for _ in range(T):
-        llm.forward(input_ids=input_ids, position_ids=position_ids, attention_mask=attention_mask_decode, storage_ids=storage_ids)
-    torch.cuda.synchronize()
-    t2 = time.time()
-    if local_rank == 0:
-        print("Batch Size,{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s".format(BATCH_SIZE, MAX_LEN, dec_len, PREFIX_LEN, (t2 - t1)/ T))
+causal_mask = torch.tril(torch.ones(max_seq_length, max_seq_length, dtype=torch.bool, device=device))
 
+llm = LMBackend(dtype=precision, device=device, dec_list=dec_list)
+llm.load_model(checkpoint_path, use_tp=use_tp, rank_group=args.rank_group)
+if args.compile:
+    llm.compile()
+llm.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
 
+prefill_storage_ids = torch.arange(0, prefix_len, device=device)
+prefill_attention_mask = causal_mask[:prefix_len][None, None, :, :].repeat(max_batch_size,1,1,1)
+prompt = torch.randint(low=3, high=30000, size=(max_batch_size, prefix_len), device=device)
+prefill_pos = torch.arange(0, prefix_len, device=device).repeat(max_batch_size,1)
+llm.encode(input_ids=prompt, position_ids=prefill_pos, storage_ids=prefill_storage_ids, attention_mask=prefill_attention_mask)
+
+# indices = torch.tensor([16,17,19], device=device).long().repeat(max_batch_size,1)
+# offset = torch.tensor(4, device=device).long().repeat(max_batch_size,1)
+# k = torch.arange(0, 32, device=device).repeat(max_batch_size,1)*2
+# dest_indices = offset + torch.arange(0, indices.size(1), device=k.device).repeat(max_batch_size,1)
+# k[:,dest_indices] = k[:,indices]
+# print(k)
+# print(indices)
+# time.sleep(1000)
+
+for declen in dec_list:
+    dec = torch.randint(low=3, high=30000, size=(max_batch_size, declen), device=device)
+    dec_pos = torch.arange(prefix_len, prefix_len + declen, device=device).unsqueeze(0).repeat(max_batch_size,1)
+    cache_pos = torch.arange(prefix_len, prefix_len + declen, device=device)
+    dec_mask = causal_mask[prefix_len:prefix_len + declen][None, None, :, :].repeat(max_batch_size,1,1,1)
+
+    with torch.inference_mode():
+            for _ in range(warm_up):
+                logits = llm.inference(input_ids=dec, position_ids=dec_pos, storage_ids=cache_pos, attention_mask=dec_mask)
+                # llm.gather_kv_incremental(indices, offset)
+            torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            for _ in range(T):
+                logits = llm.inference(input_ids=dec, position_ids=dec_pos, storage_ids=cache_pos, attention_mask=dec_mask)
+            torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            # for _ in range(T):
+            #     # llm.gather_kv_incremental(indices, offset)
+            torch.cuda.synchronize()
+            t3 = time.perf_counter()
+
+    print("Batch Size:{}, Max Length :{}, Decode Length :{}, Prefix Length :{}, inference time:{}s, gather kv time:{}s".format(max_batch_size, max_seq_length, declen, prefix_len, (t2 - t1)/ T, (t3-t2)/T))
 

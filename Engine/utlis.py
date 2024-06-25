@@ -1,5 +1,5 @@
 import torch
-from FastHesse.New_Engine.model import Transformer
+from FastHesse.Engine.model import Transformer
 import numpy as np
 import random
 
@@ -22,7 +22,7 @@ def load_model(checkpoint_path, device, precision, use_tp, rank_group=None):
     model.load_state_dict(checkpoint, assign=True)
 
     if use_tp:
-        from FastHesse.New_Engine.tp import apply_tp
+        from FastHesse.Engine.tp import apply_tp
         print("Applying tensor parallel to model ...")
         apply_tp(model, rank_group)
 

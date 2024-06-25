@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
-from FastHesse.New_Engine.model import Transformer
+from FastHesse.Engine.model import Transformer
 from torch.nn.functional import scaled_dot_product_attention
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from FastHesse.New_Engine.utlis import load_model, model_forward, cuda_graph_for_gather_kv
+from FastHesse.Engine.utlis import load_model, model_forward, cuda_graph_for_gather_kv
 import torch.distributed as dist
 
 class LMBackend:
@@ -22,7 +22,15 @@ class LMBackend:
         self.gather_kv = None
 
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None):
-        self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group)   
+        self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group)
+
+    @torch.inference_mode()
+    def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, max_depth=1):
+        self.max_length = max_seq_length
+        self.batch_size = max_batch_size
+        with torch.device(self.device):
+                self.model.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
+        self.gather_kv = cuda_graph_for_gather_kv(self.device, max_batch_size, max_depth, self.model)   
 
     def compile(self, encode=False):
         import torch._dynamo.config
@@ -64,14 +72,6 @@ class LMBackend:
                  input_pos=position_ids.clone(),
                  cache_pos=storage_ids.clone(),
                  attention_mask=attention_mask.clone()).clone()            
-    
-    @torch.inference_mode()
-    def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, max_depth=1):
-        self.max_length = max_seq_length
-        self.batch_size = max_batch_size
-        with torch.device(self.device):
-                self.model.setup_caches(max_batch_size=max_batch_size, max_seq_length=max_seq_length)
-        self.gather_kv = cuda_graph_for_gather_kv(self.device, max_batch_size, max_depth, self.model)
     
     @torch.inference_mode()
     def gather_kv_incremental(self, indices: list[int], offset:int):

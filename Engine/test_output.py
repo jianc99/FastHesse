@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from FastHesse.New_Engine.model import Transformer
+from FastHesse.Engine.model import Transformer
 import argparse
 from backend import LMBackend
 from transformers import LlamaForCausalLM, LlamaTokenizer
