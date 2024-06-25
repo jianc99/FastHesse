@@ -22,9 +22,9 @@ args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 global print
 from FastHesse.Engine.tp import init_dist
-rank = init_dist()
 use_tp = len(args.rank_group)>1
 if use_tp:
+    rank = init_dist()
     if rank != 0:
         # only print on rank 0
         print = lambda *args, **kwargs: None

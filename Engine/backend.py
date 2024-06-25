@@ -44,7 +44,7 @@ class LMBackend:
              self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)      
              
     @torch.inference_mode()
-    @sdpa_kernel([SDPBackend.FLASH_ATTENTION])
+    @sdpa_kernel([SDPBackend.MATH])
     def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
             # dist.barrier()
             dec_len = input_ids.shape[1]
