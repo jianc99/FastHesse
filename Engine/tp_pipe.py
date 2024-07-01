@@ -15,7 +15,7 @@ else:
     # Distributed is not supported on MacOS
     funcol = None
 
-from FastHesse.Engine.model import Attention, FeedForward, Transformer
+from FastHesse.Engine.model_pipe import Attention, FeedForward, Transformer_pipe
 from itertools import accumulate
 
 
@@ -51,13 +51,14 @@ def _select_kv_heads(num_kv_heads, rank_group:list):
         end = cumulative_distribution[rank]
     return start, end
 
-def init_dist():
+def init_dist(draft_rank, target_rank) -> Optional[int]:
     global_rank = _get_global_rank()
     world_size = _get_world_size()
     torch.cuda.set_device(global_rank)
     dist.init_process_group(backend="nccl", rank=global_rank, world_size=world_size)
-    global_group = dist.group.WORLD
-    return global_rank, global_group
+    draft_group = dist.new_group(draft_rank)
+    target_group = dist.new_group(target_rank)
+    return global_rank, draft_group, target_group
 
 
 def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [], rank_group=None, num_kv_heads = None, num_heads = None, head_dim = None) -> None:
@@ -153,6 +154,7 @@ def _apply_tp_ffn(mlp: FeedForward, rank_group, group) -> None:
     _apply_tp_linear_mlp(mlp.w1, "colwise", rank_group=rank_group)
     _apply_tp_linear_mlp(mlp.w3, "colwise", rank_group=rank_group)
     _apply_tp_linear_mlp(mlp.w2, "rowwise", rank_group=rank_group)
+
     mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
         output, "sum", group))
 
@@ -170,12 +172,10 @@ def _apply_tp_attn(attn: Attention, rank_group, config, group) -> None:
     attn.dim = config.dim
     attn.head_dim = attn.dim // attn.n_head
     attn.n_local_heads = config.n_local_heads
-
-    attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", group))
+    attn.group = group
 
 
-def _apply_tp_Transformer(Transformer: Transformer, rank_group) -> None:
+def _apply_tp_Transformer(Transformer: Transformer_pipe, rank_group) -> None:
     # overwrite config before Transformer.setup_cache is called
     num_heads = Transformer.config.n_head
     num_kv_heads = Transformer.config.n_local_heads
@@ -189,7 +189,7 @@ def _apply_tp_Transformer(Transformer: Transformer, rank_group) -> None:
     Transformer.config.n_local_heads = local_num_kv_heads
 
 
-def apply_tp(model: Transformer, rank_group, group) -> None:
+def apply_tp(model: Transformer_pipe, rank_group, group) -> None:
     _apply_tp_Transformer(model, rank_group)
     for block in model.layers:
         # Apply to MLP

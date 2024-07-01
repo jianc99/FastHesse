@@ -35,10 +35,10 @@ def sampling_argmax_batch(
         sampling_logits: torch.Tensor, 
         num_samples: int):
         batch_size, seq_len, voc_size = sampling_logits.size()
-        reshaped_logits = sampling_logits.view(-1, voc_size)
-        sampled_tokens = reshaped_logits.topk(k=num_samples).indices
-        sampled_indices = sampled_tokens.view(batch_size, -1)
-        return sampled_indices
+        new_token_set = torch.zeros((batch_size, num_samples*seq_len), device = sampling_logits.device).long()
+        for i in range(batch_size):
+             new_token_set[i] = sampling_argmax(sampling_logits[i], num_samples)
+        return new_token_set
 
 
 def expand_kv(kv_cache, k):
@@ -107,20 +107,6 @@ class ChildrenAccept:
     position :int = None
     successor_order :int = -1
     residual :torch.FloatTensor = None
-
-def _make_causal_mask(
-    input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device
-):
-    """
-    Make causal mask used for bi-directional self-attention.
-    Copied from Huggingface
-    """
-    bsz, tgt_len = input_ids_shape
-    mask = torch.full((tgt_len, tgt_len), torch.tensor(torch.finfo(dtype).min, device=device), device=device)
-    mask_cond = torch.arange(mask.size(-1), device=device)
-    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
-    mask = mask.to(dtype)
-    return mask
 
 def cuda_graph_for_residual(device="cuda:0", dtype=torch.float16, dim=32000, n_warmups=3, mempool=None):
     static_p = torch.full((dim,), 1, dtype=dtype, device=device)

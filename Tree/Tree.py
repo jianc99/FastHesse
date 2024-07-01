@@ -23,10 +23,7 @@ class BatchTree:
         self.max_length = max_length
         self.dtype = dtype
         self.batch_size = batch_size
-
-    def initialize(self, active_mark):
         self.position_ids = torch.zeros(self.batch_size,self.max_length).long().to(self.device)
-        self.active_mark = active_mark
 
     def set_prefix(self, prefix: torch.LongTensor):
         self.tokens[:,:prefix.size(1)] = prefix.to(self.device)

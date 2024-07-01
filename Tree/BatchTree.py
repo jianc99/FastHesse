@@ -21,7 +21,6 @@ class BatchSTree(BatchTree):
                  sample_gather_indices = None,
                  ) -> None:
         super().__init__(device=device, max_length=max_length, batch_size=batch_size)
-        # assert self.max_length == draft_model_engine.max_length
         self.max_target_seq = max_target_seq
         self.draft_model_engine = draft_model_engine
         self.target_model_engine = target_model_engine
@@ -39,7 +38,6 @@ class BatchSTree(BatchTree):
 
         tree_mask :torch.Tensor = self.grow_map["mask"].to(self.device)
         tree_mask = (tree_mask == 1).type(torch.bool)
-        self.initialize(None)
         self.set_prefix(prefix=prefix)
 
         self.tree_size = self.grow_map["size"]
@@ -68,9 +66,7 @@ class BatchSTree(BatchTree):
         root_logits = softmax(root_logits / self.temperature, dim=-1)
         root_tokens = root_logits.view(-1, self.vocab_size).multinomial(num_samples=1).view(self.batch_size, 1)
         self.tree_buffer[:, 0] = root_tokens.squeeze(1)
-        
-        self.prepare_for_next_iter()
-    
+            
     @torch.inference_mode()
     def collective_grow_static(self, idx_list, n_branch_list :list[int], benchmark=False, grow_step = None):
         
@@ -81,14 +77,13 @@ class BatchSTree(BatchTree):
         total_branch = sum(n_branch_list)
         indices = self.grow_map_roots_gpu[grow_step+1]
         
-
         # Sample from stored logits
         if benchmark:
                 torch.cuda.synchronize()
                 t1 = time.time()
-        for i in range(self.batch_size):
-            new_tokens_set = self.sampling_callables[grow_step](self.draft_logits[i, idx_list])
-            self.tree_buffer[i, indices] = new_tokens_set[self.sample_gather_indices[grow_step]]
+
+        new_tokens_set = self.sampling_callables[grow_step](self.draft_logits[:, idx_list])
+        self.tree_buffer[:, indices] = new_tokens_set[:, self.sample_gather_indices[grow_step]]
             
         if benchmark:
                     torch.cuda.synchronize()
@@ -129,7 +124,7 @@ class BatchSTree(BatchTree):
         
     @torch.inference_mode()
     def verify(self, benchmark = False):
-        # Inference to get the target tokens
+# Inference to get the target tokens
         if benchmark:
             torch.cuda.synchronize()
             t1 = time.time()
@@ -145,75 +140,79 @@ class BatchSTree(BatchTree):
         self.target_token = self.target_logits.view(-1, self.vocab_size).multinomial(num_samples=1).view(self.batch_size, self.tree_size)
 # Compare the target token with draft tokens
         terminal = False
-        batch_accept_list=[]
-        batch_accept_list_kv= []
+        kv_indices = torch.full((self.batch_size, self.draft_step),self.max_target_seq-1,device=self.device).long()
+        kv_indices[:, 0] = self.max_length-self.tree_size
+        offsets = self.num_nodes.clone()
+        bonus_tokens = torch.full((self.batch_size, 1), 0, device=self.device).long()
+        
         for batch_idx in range(self.batch_size):
             accept_list = [0]
+            seq_idx = 0
             while True:
                 parent_id = accept_list[-1]
                 pos = self.accept_step(parent_id=parent_id, idx=batch_idx)
                 if pos != -1:
+                    seq_idx+=1
                     accept_list.append(pos)
+                    kv_indices[batch_idx, seq_idx] = self.max_length-self.tree_size+pos
                     if self.tree_buffer[batch_idx, pos] == 0 or self.tree_buffer[batch_idx, pos] == 2:
                         terminal = True
                         break
                 else:
                     break
-            batch_accept_list.append(accept_list)
             accept_length = len(accept_list)
-            batch_accept_list_kv.append([self.max_length-self.tree_size+pos for pos in accept_list])
             self.tokens[batch_idx, self.num_nodes[batch_idx]:self.num_nodes[batch_idx]+accept_length] = self.tree_buffer[batch_idx, accept_list]
             self.num_nodes[batch_idx]+= accept_length
+            bonus_token = self.target_token[batch_idx, accept_list[-1]].reshape(1)
+            if (bonus_token == 2) or (bonus_token == 0): 
+                terminal = True
+            bonus_tokens[batch_idx] = bonus_token
         if benchmark:
             torch.cuda.synchronize()
             t3 = time.time()
-# Check Bonus token
+
+# Check Number of Nodes + Bonus Token <= max_target_token
+        if self.num_nodes.max()+ 1 >= self.max_target_seq:
+            terminal = True
+
+# Put Bonus tokens to the root of tree
         if not terminal:
-            for batch_idx in range(self.batch_size):
-                accept_list = batch_accept_list[batch_idx]
-                bonus_token = self.target_token[batch_idx, accept_list[-1]].reshape(1)
-                if (bonus_token == 2) or (bonus_token == 0): 
-                    terminal = True
-                    break
-                self.tree_buffer[batch_idx, 0]= bonus_token
+            self.tree_buffer[:, :1]= bonus_tokens
+
 # Gather KV Cache
         if not terminal:
-            indices = torch.full((self.batch_size, self.draft_step),255,device=self.device).long()
-            offsets = self.num_nodes.clone()
-            for i in range(self.batch_size):
-                accept_list_kv=batch_accept_list_kv[i]
-                for j in range(len(accept_list_kv)):
-                    indices[i,j] = accept_list_kv[j]
-                accept_length = len(accept_list_kv)
-                offsets[i]-=accept_length
-            self.draft_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
-            self.target_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
+            self.draft_model_engine.gather_kv_incremental(kv_indices, offsets.view(-1,1))
+            self.target_model_engine.gather_kv_incremental(kv_indices, offsets.view(-1,1))
 
         if not terminal:
             if benchmark:
                 torch.cuda.synchronize()
                 t4 = time.time()
-                self.prepare_for_next_iter()
                 return self.num_nodes, t2 - t1, t3-t2, t4 - t3, terminal
-            self.prepare_for_next_iter()
             return self.num_nodes, terminal
-            
+# If terminal, put the bonus token into the overall token set        
         else:
+             for i in range(self.batch_size):
+                self.tokens[i, self.num_nodes[i]] = bonus_tokens[i]
+             self.num_nodes += 1
              if benchmark:
                 torch.cuda.synchronize()
                 t4 = time.time()
                 return self.num_nodes, t2 - t1, t3-t2, t4 - t3, terminal
              return self.num_nodes, terminal
     
-    
     def verbose(self):
         super().verbose()
     
-    
     def construct_grow_map(self, benchmark = False):
         if benchmark:
+            torch.cuda.synchronize()
             sample_time = 0
-            compute_time = 0
+            compute_time = time.time()
+        self.prepare_for_next_iter()
+        if benchmark:
+            compute_time = time.time() - compute_time
+
         for i in range(self.draft_step - 1):
                 if benchmark:
                         _, t1, t2 = self.collective_grow_static(self.grow_map_roots_gpu[i], self.grow_map['branches'][i], benchmark=benchmark, grow_step=i)
@@ -227,14 +226,11 @@ class BatchSTree(BatchTree):
             return None
     
     def prepare_for_next_iter(self):
-        if self.num_nodes.max()+ 1 > self.max_target_seq:
-              return 
         self.make_inference_para_for_next_itr()
         draft_model_outputs = self.draft_model_engine.inference(input_ids = self.tree_buffer[:,:1], 
                                                     storage_ids=self.storage_ids[:1],
                                                     position_ids=self.position_ids[:, :1],
-                                                    attention_mask=self.attn_mask[:,:,:1,:])
-        
+                                                    attention_mask=self.attn_mask[:,:,:1,:])     
         self.draft_logits[:, 0] = draft_model_outputs[:, -1]
 
     def make_inference_para_for_first_itr(self, prefix_len):
@@ -289,7 +285,6 @@ class BatchSTreeTest(BatchTree):
         self.Successors = self.grow_map["Successors"]
 
         tree_mask :torch.Tensor = self.grow_map["mask"].to(self.device)
-        self.initialize(None)
         self.set_prefix(prefix=prefix)
 
         self.tree_size = self.grow_map["size"]
@@ -322,28 +317,14 @@ class BatchSTreeTest(BatchTree):
         self.prepare_for_next_iter()
     
     @torch.inference_mode()
-    def collective_grow_static(self, idx_list, n_branch_list :list[int], benchmark=False, grow_step = None):
-        
-        if benchmark:
-            x1 = 0.0
-            x2 = 0.0
+    def collective_grow_static(self, idx_list, n_branch_list :list[int], grow_step = None):
         
         total_branch = sum(n_branch_list)
         indices = self.grow_map_roots_gpu[grow_step+1]
         
-
         # Sample from stored logits
-        if benchmark:
-                torch.cuda.synchronize()
-                t1 = time.time()
-        for i in range(self.batch_size):
-            new_tokens_set = self.sampling_callables[grow_step](self.draft_logits[i, idx_list])
-            self.tree_buffer[i, indices] = new_tokens_set[self.sample_gather_indices[grow_step]]
-            
-        if benchmark:
-                    torch.cuda.synchronize()
-                    t2 = time.time()
-                    x1 += (t2 - t1)
+        new_tokens_set = self.sampling_callables[grow_step](self.draft_logits[:, idx_list])
+        self.tree_buffer[:, indices] = new_tokens_set[:, self.sample_gather_indices[grow_step]]
         
         draft_model_outputs = self.draft_model_engine.inference(
             input_ids = self.tree_buffer[:, indices],
@@ -352,13 +333,6 @@ class BatchSTreeTest(BatchTree):
             storage_ids=self.storage_ids[indices]
         )
         self.draft_logits[:, indices] = draft_model_outputs[:, -total_branch:]
-
-        if benchmark:
-                    torch.cuda.synchronize()
-                    t3 = time.time()
-                    x2 += (t3 - t2)
-        if benchmark:
-            return n_branch_list, x1, x2
         return n_branch_list
     
     @torch.inference_mode()
@@ -378,27 +352,17 @@ class BatchSTreeTest(BatchTree):
 
         
     @torch.inference_mode()
-    def verify(self, benchmark = False):
+    def verify(self):
         # Inference to get the target tokens
         accept_pos=-1
-        if benchmark:
-            torch.cuda.synchronize()
-            t1 = time.time()
-
         target_model_outputs = self.target_model_engine.inference(input_ids = self.tree_buffer, 
                                     position_ids =self.position_ids, attention_mask = self.attn_mask,
                                     storage_ids=self.storage_ids)
-        if benchmark:
-            torch.cuda.synchronize()
-            t2 = time.time()
+        
         self.target_logits = target_model_outputs[:, -self.tree_size:]
         self.target_logits = get_sampling_logits(logits=self.target_logits, top_p=self.top_p, T=self.temperature, replicate=False)
         self.target_logits = softmax(self.target_logits / self.temperature, dim=-1)
         self.target_token = self.target_logits.view(-1, self.vocab_size).multinomial(num_samples=1).view(self.batch_size, self.tree_size)
-
-        if benchmark:
-            torch.cuda.synchronize()
-            t3 = time.time()
 # Compare the target token with draft tokens
         terminal = False
         batch_accept_list=[]
@@ -432,7 +396,7 @@ class BatchSTreeTest(BatchTree):
                 self.tree_buffer[batch_idx, 0]= bonus_token
 # Gather KV Cache
         if not terminal:
-            indices = torch.full((self.batch_size, self.draft_step),255,device=self.device).long()
+            indices = torch.full((self.batch_size, self.draft_step),self.max_target_seq-1,device=self.device).long()
             offsets = self.num_nodes.clone()
             for i in range(self.batch_size):
                 accept_list_kv=batch_accept_list_kv[i]
@@ -444,19 +408,10 @@ class BatchSTreeTest(BatchTree):
             self.target_model_engine.gather_kv_incremental(indices, offsets.view(-1,1))
 
         if not terminal:
-            if benchmark:
-                torch.cuda.synchronize()
-                t4 = time.time()
-                self.prepare_for_next_iter()
-                return self.num_nodes, t2 - t1, t3-t2, t4 - t3, terminal
             self.prepare_for_next_iter()
             return self.num_nodes, terminal, accept_pos
             
         else:
-             if benchmark:
-                torch.cuda.synchronize()
-                t4 = time.time()
-                return self.num_nodes, t2 - t1, t3-t2, t4 - t3, terminal
              return self.num_nodes, terminal, accept_pos
     
     
@@ -464,21 +419,9 @@ class BatchSTreeTest(BatchTree):
         super().verbose()
     
     
-    def construct_grow_map(self, benchmark = False):
-        if benchmark:
-            sample_time = 0
-            compute_time = 0
+    def construct_grow_map(self):
         for i in range(self.draft_step - 1):
-                if benchmark:
-                        _, t1, t2 = self.collective_grow_static(self.grow_map_roots_gpu[i], self.grow_map['branches'][i], benchmark=benchmark, grow_step=i)
-                        sample_time += t1
-                        compute_time += t2   
-                else:
-                        self.collective_grow_static(self.grow_map_roots_gpu[i], self.grow_map['branches'][i], grow_step=i)
-        if benchmark:
-            return sample_time, compute_time
-        else:
-            return None
+            self.collective_grow_static(self.grow_map_roots_gpu[i], self.grow_map['branches'][i], grow_step=i)
     
     def prepare_for_next_iter(self):
         if self.num_nodes.max()+ 1 > self.max_target_seq:

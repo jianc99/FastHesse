@@ -3,26 +3,22 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 from FastHesse.Engine.model import Transformer
-from torch.nn.functional import scaled_dot_product_attention
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from FastHesse.Engine.utlis import load_model, model_forward, cuda_graph_for_gather_kv
-import torch.distributed as dist
+from FastHesse.Engine.utils import load_model, cuda_graph_for_gather_kv
 
 class LMBackend:
     def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_list: list = [1]) -> None:
         self.dtype = dtype
         self.device = device
         self.model_forward = {}
-        self.dec_list = []
         for dec_len in dec_list:
             if dec_len == 0: continue
-            self.dec_list.append(dec_len)
             self.model_forward[dec_len] = lambda model, x, input_pos, cache_pos, attention_mask : model(x, input_pos, cache_pos, attention_mask)
         self.prefill = lambda model, x, input_pos, cache_pos, attention_mask : model(x, input_pos, cache_pos, attention_mask)
         self.gather_kv = None
 
-    def load_model(self, checkpoints: str, use_tp: bool, rank_group=None):
-        self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group)
+    def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
+        self.model: Transformer = load_model(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp= use_tp, rank_group=rank_group, group = group)
 
     @torch.inference_mode()
     def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, max_depth=1):
@@ -44,28 +40,19 @@ class LMBackend:
              self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)      
              
     @torch.inference_mode()
+    # @sdpa_kernel([SDPBackend.MATH])
     @sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION])
     def inference(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
-            # dist.barrier()
             dec_len = input_ids.shape[1]
-            if dec_len in self.model_forward.keys():
-                return self.model_forward[dec_len](
-                    model=self.model, 
-                    x=input_ids.clone(),
-                    input_pos=position_ids.clone(),
-                    cache_pos=storage_ids.clone(),
-                    attention_mask=attention_mask.clone()).clone()
-            else:
-                 return model_forward(
-                    model=self.model, 
-                    x=input_ids.clone(),
-                    input_pos=position_ids.clone(),
-                    cache_pos=storage_ids.clone(),
-                    attention_mask=attention_mask.clone()).clone()
+            return self.model_forward[dec_len](
+                model=self.model, 
+                x=input_ids.clone(),
+                input_pos=position_ids.clone(),
+                cache_pos=storage_ids.clone(),
+                attention_mask=attention_mask.clone()).clone() if dec_len in self.model_forward.keys() else self.model.forward(input_ids, position_ids, storage_ids, attention_mask).clone()
     
     @torch.inference_mode()
     def encode(self, input_ids: torch.LongTensor, position_ids: torch.LongTensor, storage_ids: torch.LongTensor, attention_mask: torch.Tensor):
-            # dist.barrier()
             return self.prefill(
                  model=self.model, 
                  x=input_ids.clone(),
@@ -74,26 +61,8 @@ class LMBackend:
                  attention_mask=attention_mask.clone()).clone()            
     
     @torch.inference_mode()
-    def gather_kv_incremental(self, indices: list[int], offset:int):
+    def gather_kv_incremental(self, indices: Tensor, offset:Tensor):
         self.gather_kv(indices, offset)
-    
-    def warmup(self, n=10, prefix_len=128):
-        causal_mask = torch.tril(torch.ones(self.max_length, self.max_length, dtype=torch.bool, device=self.device))
-        prefill_storage_ids = torch.arange(0, prefix_len, device=self.device)
-        prefill_attention_mask = causal_mask[:prefix_len][None, None, :, :].repeat(self.batch_size,1,1,1)
-        prompt = torch.randint(low=3, high=30000, size=(self.batch_size, prefix_len), device=self.device)
-        prefill_pos = torch.arange(0, prefix_len, device=self.device).repeat(self.batch_size,1)
-        self.encode(input_ids=prompt, position_ids=prefill_pos, storage_ids=prefill_storage_ids, attention_mask=prefill_attention_mask)
-        for declen in self.dec_list:
-            dec = torch.randint(low=3, high=30000, size=(self.batch_size, declen), device=self.device)
-            dec_pos = torch.arange(prefix_len, prefix_len + declen, device=self.device).unsqueeze(0).repeat(self.batch_size,1)
-            cache_pos = torch.arange(prefix_len, prefix_len + declen, device=self.device)
-            dec_mask = causal_mask[prefix_len:prefix_len + declen][None, None, :, :].repeat(self.batch_size,1,1,1)
-            torch.cuda.synchronize()
-            for _ in range(n):
-                 self.inference(input_ids=dec, position_ids=dec_pos, storage_ids=cache_pos, attention_mask=dec_mask)
-            torch.cuda.synchronize()
-        self.clear_kv()
     
     @torch.inference_mode()
     def clear_kv(self):

@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
+from torch.distributed import _functional_collectives as funcol
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -44,7 +45,7 @@ class ModelArgs:
         if name in transformer_configs:
             return cls(**transformer_configs[name])
         # fuzzy search
-        config = [config for config in transformer_configs if config.lower() in str(name).lower()]
+        config = [config for config in transformer_configs if config in str(name).upper() or config in str(name)]
 
         # We may have two or more configs matched (e.g. "7B" and "Mistral-7B"). Find the best config match,
         # take longer name (as it have more symbols matched)
@@ -70,7 +71,7 @@ transformer_configs = {
     "Wide-Sheared-LLaMA-543M": dict(block_size=4096, n_layer=3, n_head=32, n_local_heads=32, dim=4096, intermediate_size=11008, vocab_size=32000),
     "Wide-Sheared-LLaMA-290M": dict(block_size=4096, n_layer=1, n_head=32, n_local_heads=32, dim=4096, intermediate_size=11008, vocab_size=32000),
     "llama-68m": dict(block_size=2048, n_layer=2, n_head=12, n_local_heads=12, dim=768, intermediate_size=3072, vocab_size=32000),
-    "1.3b": dict(block_size =2048, n_layer=24, n_head=16, n_local_heads=16, dim=2048, intermediate_size=5504, vocab_size=32000),
+    "llama-1.3b": dict(block_size =2048, n_layer=24, n_head=16, n_local_heads=16, dim=2048, intermediate_size=5504, vocab_size=32000),
 }
 class KVCache(nn.Module):
     def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16):
@@ -89,7 +90,7 @@ class KVCache(nn.Module):
 
         return k_out, v_out
 
-class Transformer(nn.Module):
+class Transformer_pipe(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
         super().__init__()
         self.config = config
@@ -118,18 +119,33 @@ class Transformer(nn.Module):
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
         for b in self.layers:
-            b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+            b.attention.kv_cache_1 = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+            b.attention.kv_cache_2 = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
 
         self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype)
 
-    def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, cache_pos: Optional[Tensor] = None, attention_mask: Optional[Tensor] = None) -> Tensor:
+    def forward_1(self, idx: Tensor, input_pos: Optional[Tensor] = None, cache_pos: Optional[Tensor] = None, attention_mask: Optional[Tensor] = None) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         mask = attention_mask
-
+        if cache_pos is None:
+            cache_pos = input_pos
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
         for i, layer in enumerate(self.layers):
-            x = layer(x, freqs_cis, mask, cache_pos)
+            x = layer.forward_1(x, freqs_cis, mask, cache_pos)
+        x = self.norm(x)
+        logits = self.output(x)
+        return logits
+    
+    def forward_2(self, idx: Tensor, input_pos: Optional[Tensor] = None, cache_pos: Optional[Tensor] = None, attention_mask: Optional[Tensor] = None) -> Tensor:
+        assert self.freqs_cis is not None, "Caches must be initialized first"
+        mask = attention_mask
+        if cache_pos is None:
+            cache_pos = input_pos
+        freqs_cis = self.freqs_cis[input_pos]
+        x = self.tok_embeddings(idx)
+        for i, layer in enumerate(self.layers):
+            x = layer.forward_2(x, freqs_cis, mask, cache_pos)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -147,11 +163,15 @@ class TransformerBlock(nn.Module):
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
-    def forward(self, x: Tensor, freqs_cis: Tensor, mask: Tensor, cache_pos: Tensor) -> Tensor:
-        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, cache_pos)
+    def forward_1(self, x: Tensor, freqs_cis: Tensor, mask: Tensor, cache_pos: Tensor) -> Tensor:
+        h = x + self.attention.forward_1(self.attention_norm(x), freqs_cis, mask, cache_pos)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
-
+    
+    def forward_2(self, x: Tensor, freqs_cis: Tensor, mask: Tensor, cache_pos: Tensor) -> Tensor:
+        h = x + self.attention.forward_2(self.attention_norm(x), freqs_cis, mask, cache_pos)
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out
 
 class Attention(nn.Module):
     def __init__(self, config: ModelArgs):
@@ -162,7 +182,9 @@ class Attention(nn.Module):
         # key, query, value projections for all heads, but in a batch
         self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
-        self.kv_cache = None
+        self.kv_cache_1 = None
+        self.kv_cache_2 = None
+        self.group = None
 
         self.n_head = config.n_head
         self.head_dim = config.head_dim
@@ -177,7 +199,7 @@ class Attention(nn.Module):
             wv = state_dict.pop(prefix + "wv.weight")
             state_dict[prefix + "wqkv.weight"] = torch.cat([wq, wk, wv])
 
-    def forward(self, x: Tensor, freqs_cis: Tensor, mask: Tensor, cache_pos: Optional[Tensor] = None) -> Tensor:
+    def forward_1(self, x: Tensor, freqs_cis: Tensor, mask: Tensor, cache_pos: Optional[Tensor] = None) -> Tensor:
         bsz, seqlen, _ = x.shape
 
         kv_size = self.n_local_heads * self.head_dim
@@ -192,8 +214,7 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        if self.kv_cache is not None:
-            k, v = self.kv_cache.update(cache_pos, k, v)
+        k, v = self.kv_cache_1.update(cache_pos, k, v)
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
@@ -202,7 +223,34 @@ class Attention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
-        return y
+        # print(self.group, torch.distributed.get_rank())
+        return funcol.all_reduce(y, "sum", self.group) if self.group != None else y
+
+    def forward_2(self, x: Tensor, freqs_cis: Tensor, mask: Tensor, cache_pos: Optional[Tensor] = None) -> Tensor:
+        bsz, seqlen, _ = x.shape
+
+        kv_size = self.n_local_heads * self.head_dim
+        q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
+
+        q = q.view(bsz, seqlen, self.n_head, self.head_dim)
+        k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+
+        q = apply_rotary_emb(q, freqs_cis)
+        k = apply_rotary_emb(k, freqs_cis)
+
+        q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
+
+        k, v = self.kv_cache_2.update(cache_pos, k, v)
+
+        k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
+
+        y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
+
+        y = self.wo(y)
+        return funcol.all_reduce(y, "sum", self.group) if self.group != None else y
 
 
 class FeedForward(nn.Module):
