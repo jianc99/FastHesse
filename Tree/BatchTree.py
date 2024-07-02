@@ -206,12 +206,15 @@ class BatchSTree(BatchTree):
     
     def construct_grow_map(self, benchmark = False):
         if benchmark:
-            torch.cuda.synchronize()
             sample_time = 0
-            compute_time = time.time()
+            compute_time = 0
+            torch.cuda.synchronize()
+            pre_start = time.time()
         self.prepare_for_next_iter()
         if benchmark:
-            compute_time = time.time() - compute_time
+            torch.cuda.synchronize()
+            pre_end = time.time()
+            compute_time += pre_end - pre_start
 
         for i in range(self.draft_step - 1):
                 if benchmark:
