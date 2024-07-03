@@ -67,7 +67,7 @@ class PipeTree_Draft(BatchTree):
 
         control_tensor = torch.tensor(idx,device=self.device)
         dist.broadcast(control_tensor, draft_rank0)
-        dist.broadcast(self.tokens[:, :prefix.size(1)],draft_rank0)
+        dist.broadcast(prefix.to(self.device),draft_rank0)
         root_tokens = torch.zeros((self.batch_size,1),device=self.device).long()
         dist.broadcast(root_tokens, target_rank0)
         self.tree_buffer[:, 0] = root_tokens.squeeze(1)
@@ -359,7 +359,7 @@ class PipeTree_Target(BatchTree):
             dist.broadcast(self.kv_indices, self.draft_rank0)
             dist.broadcast(self.kv_offsets, self.draft_rank0)
             dist.broadcast(self.num_nodes, self.draft_rank0)
-            self.target_model_engine.gather_kv_incremental(self.kv_indices, self.kv_offsets, self.idx)
+            self.target_model_engine.gather_kv_incremental(self.kv_indices, self.kv_offsets.view(-1,1), self.idx)
             self.make_inference_para_for_next_itr()
         if benchmark:
             torch.cuda.synchronize()
