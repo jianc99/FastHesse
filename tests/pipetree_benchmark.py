@@ -275,7 +275,8 @@ if global_rank in args.target_group:
                 dist.broadcast(prefix, draft_rank0)
                 mini_batch_1_tree = PipeTree_Target(device=DEVICE, target_model_engine=target_model,prefix=prefix, temperature=args.T, top_p=args.P,
                                         max_length=MAX_LEN, grow_map = grow_map, batch_size=BATCH_SIZE//2, target_rank0=target_rank0, draft_rank0=draft_rank0, idx=0, max_target_seq=args.M)
-                prefill_time += 1
+                if args.Mode == "benchmark":
+                    prefill_time += 1
             elif control_tensor == 1:
                 prefix = torch.zeros((BATCH_SIZE//2,128), device=DEVICE).long()
                 dist.broadcast(prefix, draft_rank0)
