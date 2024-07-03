@@ -34,11 +34,7 @@ def sampling_argmax(
 def sampling_argmax_batch(
         sampling_logits: torch.Tensor, 
         num_samples: int):
-        batch_size, seq_len, voc_size = sampling_logits.size()
-        new_token_set = torch.zeros((batch_size, num_samples*seq_len), device = sampling_logits.device).long()
-        for i in range(batch_size):
-             new_token_set[i] = sampling_argmax(sampling_logits[i], num_samples)
-        return new_token_set
+        return sampling_logits.topk(k=num_samples, dim=-1).indices.flatten(start_dim=1).long()
 
 
 def expand_kv(kv_cache, k):
