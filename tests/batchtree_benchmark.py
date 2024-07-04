@@ -20,7 +20,7 @@ parser.add_argument('--target', type=Path, default=Path("checkpoints/meta-llama/
 parser.add_argument('--growmap', type=str, default="demo_tree.pt", help='growmap path')
 parser.add_argument('--dataset', type=str, default="cnn", help='dataset path')
 parser.add_argument('--start', type=int, default=0, help='start')
-parser.add_argument('--end', type=int, default=200, help='end')
+parser.add_argument('--end', type=int, default=500, help='end')
 parser.add_argument('--T', type=float, default=0.6, help='temperature')
 parser.add_argument('--P', type=float, default=0.9, help='top_p')
 parser.add_argument('--B', type=int, default=16, help='batch_size')
