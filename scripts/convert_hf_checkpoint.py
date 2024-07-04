@@ -52,10 +52,13 @@ def convert_hf_checkpoint(
       except AssertionError:
         print(f"{model_map_json_pytorch} not found")
    
-    if model_map_json is None: raise Exception("No model map found!")
+    if model_map_json is None:
+       print("Use single weight map")
+       bin_file = checkpoint_dir / "pytorch_model.bin"
 
-    with open(model_map_json) as json_map:
-        bin_index = json.load(json_map)
+    if model_map_json != None:
+        with open(model_map_json) as json_map:
+            bin_index = json.load(json_map)
 
     weight_map = {
         "model.embed_tokens.weight": "tok_embeddings.weight",
@@ -72,7 +75,8 @@ def convert_hf_checkpoint(
         "model.norm.weight": "norm.weight",
         "lm_head.weight": "output.weight",
     }
-    bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+    if model_map_json != None:
+        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
 
     def permute(w, n_head):
         dim = config.dim
@@ -83,13 +87,18 @@ def convert_hf_checkpoint(
         )
 
     merged_result = {}
-    for file in sorted(bin_files):
-       if "safetensors" in str(file):
-           state_dict = load_safetensors_file(str(file), device="cpu")
-           merged_result.update(state_dict)
-       else:
-           state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
-           merged_result.update(state_dict)
+    if model_map_json != None:
+        for file in sorted(bin_files):
+            if "safetensors" in str(file):
+                state_dict = load_safetensors_file(str(file), device="cpu")
+                merged_result.update(state_dict)
+            else:
+                state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
+                merged_result.update(state_dict)
+    else:
+        state_dict = state_dict = torch.load(str(bin_file), map_location="cpu", mmap=True, weights_only=True)
+        merged_result.update(state_dict)
+ 
     final_result = {}
     for key, value in merged_result.items():
         if "layers" in key:
